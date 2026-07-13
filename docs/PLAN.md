@@ -23,8 +23,8 @@
 
 | Этап | Содержание | Критерий готовности |
 |---|---|---|
-| **M0** | Протокол (framing, сериализация) + `config.json` + CRC32 — чистая логика, без сети. Юнит-тесты (GoogleTest). | `ctest` зелёный: round-trip encode/decode, отказ на битый/oversize/усечённый фрейм, load/save конфига. Ноль варнингов. |
-| **M1** | `net`-шим (Winsock/POSIX). Blocking-сервер на 1 клиента: `LIST` + `DOWNLOAD` одного файла end-to-end, прогресс, сверка checksum. | Реальный файл передан, checksum совпал (оба нативно на Windows). |
+| **M0** ✅ | Протокол (framing, сериализация) + `config.json` + CRC32 — чистая логика, без сети. Юнит-тесты (GoogleTest). | `ctest` зелёный: round-trip encode/decode, отказ на битый/oversize/усечённый фрейм, load/save конфига. Ноль варнингов. **Готово** (commit `7f27a6f`). |
+| **M1** ✅ | `net`-шим (Winsock/POSIX). Blocking-сервер на 1 клиента: `LIST` + `DOWNLOAD` одного файла end-to-end, прогресс, сверка checksum. | Реальный файл передан, checksum совпал. **Готово** (commit `486ffa5`): 46 тестов + двухпроцессный TCP-смоук. |
 | **M2** | Thread-per-connection: несколько клиентов параллельно. Admin-консоль отдельным потоком → потокобезопасная очередь команд. Команды `add/remove/list/clients/kick/status/shutdown/help`. | 2+ клиента качают параллельно, консоль отзывчива. TSan чистый. |
 | **M3** | Нагрузочный тест (`scripts/loadtest`): N параллельных закачек, замер throughput, потолок thread-per-connection. | Цифры + вывод, обосновывающий M4. |
 | **M4** | epoll + thread pool (Linux-only). `Dockerfile` + `docker-compose.yml`, проброс порта на `localhost`. Клиент на Windows коннектится к контейнеру. | Функционал = M2 на epoll; нагрузочный тест лучше. TSan чистый. |
