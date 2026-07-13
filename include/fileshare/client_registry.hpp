@@ -56,7 +56,9 @@ public:
     std::shared_ptr<ClientEntry> add(std::string peer, std::intptr_t handle);
     void remove(std::uint64_t id);
     bool kick(std::uint64_t id);   // half-close the connection; true if it existed
-    void shutdown_all();           // half-close every connection (server teardown)
+    void shutdown_all();           // half-close every connection (hard teardown)
+    void shutdown_idle();          // half-close only connections that are not downloading
+    [[nodiscard]] std::size_t downloading_count() const; // connections with a current alias
 
     [[nodiscard]] std::size_t size() const;
     [[nodiscard]] std::vector<ClientSnapshot> snapshot() const;

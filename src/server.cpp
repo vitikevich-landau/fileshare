@@ -32,7 +32,7 @@ void Server::serve_forever() {
     // dereference `this`/core_, so they must all finish before we return.
     std::exception_ptr pending;
     try {
-        while (core_.running()) {
+        while (core_.accepting()) {
             core_.drain_commands();
 
             std::optional<net::Socket> client;
@@ -43,7 +43,7 @@ void Server::serve_forever() {
                 }
                 client = net::tcp_accept(listener_, &peer);
             } catch (const net::NetError&) {
-                if (!core_.running()) {
+                if (!core_.accepting()) {
                     break;
                 }
                 continue;
@@ -56,14 +56,25 @@ void Server::serve_forever() {
             try {
                 std::thread(&Server::handle_client, this, std::move(*client), std::move(peer))
                     .detach();
-            } catch (const std::system_error&) {
-                active_.fetch_sub(1); // could not start a thread; drop this connection
+            } catch (...) {
+                // std::system_error (OS can't start the thread) OR std::bad_alloc
+                // (thread state allocation) -- no thread ran either way, so undo
+                // the active_ bump and drop just this connection, otherwise the
+                // final drain wait would block forever on a phantom count.
+                active_.fetch_sub(1);
             }
         }
     } catch (...) {
         pending = std::current_exception();
     }
 
+    // Graceful drain: close idle connections now, then give active downloads up
+    // to drain_grace_ to finish before force-closing any stragglers (§3.1).
+    core_.registry().shutdown_idle();
+    {
+        std::unique_lock<std::mutex> lock(drain_mutex_);
+        drain_cv_.wait_for(lock, drain_grace_, [this] { return active_.load() == 0; });
+    }
     core_.registry().shutdown_all();
     {
         std::unique_lock<std::mutex> lock(drain_mutex_);
@@ -80,7 +91,7 @@ void Server::handle_client(net::Socket client, std::string peer) {
     try {
         entry = core_.registry().add(std::move(peer), client.handle());
         bool serving = true;
-        while (serving && core_.running()) {
+        while (serving && core_.accepting()) {
             const std::optional<Frame> frame = net::recv_message(client);
             if (!frame) {
                 break; // clean close
@@ -155,7 +166,10 @@ void Server::handle_download(net::Socket& client, const DownloadRequest& req, Cl
 
     info.set_alias(req.alias);
     std::vector<std::uint8_t> buf(CHUNK_SIZE);
-    while (core_.running()) {
+    // Stream to completion (no accepting() check): an in-flight download runs to
+    // the end during a graceful drain; only a force-close after the grace period
+    // (send throws NetError) aborts it.
+    for (;;) {
         in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
         const std::streamsize got = in.gcount();
         if (got > 0) {

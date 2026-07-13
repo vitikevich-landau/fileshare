@@ -33,12 +33,15 @@ public:
         : catalog_(std::move(catalog)), config_path_(std::move(config_path)) {}
 
     // --- Lifecycle ----------------------------------------------------------
+    // accepting() gates the accept loop and per-connection request loops. It is
+    // cleared on shutdown; in-flight downloads are NOT gated by it (they run to
+    // completion during a graceful drain -- see the servers' teardown).
     void mark_started() noexcept {
         start_time_ = std::chrono::steady_clock::now();
-        running_.store(true);
+        accepting_.store(true);
     }
-    void request_stop() noexcept { running_.store(false); }
-    [[nodiscard]] bool running() const noexcept { return running_.load(); }
+    void request_stop() noexcept { accepting_.store(false); }
+    [[nodiscard]] bool accepting() const noexcept { return accepting_.load(); }
 
     // --- Shared state for the I/O engine ------------------------------------
     [[nodiscard]] ClientRegistry& registry() noexcept { return registry_; }
@@ -67,6 +70,9 @@ public:
     [[nodiscard]] std::uint64_t bytes_sent() const noexcept { return bytes_sent_.load(); }
     [[nodiscard]] std::uint64_t completed_downloads() const noexcept { return completed_.load(); }
     [[nodiscard]] std::size_t   client_count() const { return registry_.size(); }
+    [[nodiscard]] std::size_t   downloads_in_progress() const {
+        return registry_.downloading_count();
+    }
 
 private:
     void execute_command(const std::string& line);
@@ -78,7 +84,7 @@ private:
 
     std::atomic<std::uint64_t> bytes_sent_{0};
     std::atomic<std::uint64_t> completed_{0};
-    std::atomic<bool>          running_{false};
+    std::atomic<bool>          accepting_{false};
     std::chrono::steady_clock::time_point start_time_{};
 
     std::mutex              cmd_mutex_;

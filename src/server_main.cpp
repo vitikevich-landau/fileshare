@@ -1,3 +1,5 @@
+#include <atomic>
+#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
@@ -45,6 +47,18 @@ using ServerImpl = EpollServer;
 #else
 using ServerImpl = Server;
 #endif
+
+namespace {
+// SIGINT/SIGTERM (Ctrl+C, `docker stop`) trigger a graceful shutdown. The
+// handler does only async-signal-safe work: stop() is a single atomic store.
+std::atomic<ServerImpl*> g_server{nullptr};
+extern "C" void handle_signal(int /*sig*/) {
+    ServerImpl* server = g_server.load();
+    if (server != nullptr) {
+        server->stop();
+    }
+}
+} // namespace
 
 namespace {
 
@@ -144,39 +158,43 @@ int main(int argc, char** argv) {
 
     std::cout << "serving on port " << bound << " -- admin console ready (type 'help')\n";
 
-    // Network engine runs on its own thread; the main thread is the admin
-    // console reading stdin and enqueuing commands (§6). EOF or `shutdown`
-    // stops the engine, which we then join cleanly.
-    std::thread engine([&] {
-        try {
-            server.serve_forever();
-        } catch (const std::exception& e) {
-            std::cerr << "engine error: " << e.what() << "\n";
+    g_server.store(&server);
+    std::signal(SIGINT, handle_signal);
+    std::signal(SIGTERM, handle_signal);
+
+    // Run the admin console on a detached thread and the network engine on the
+    // main thread. A signal (handler -> stop()) or a `shutdown` command then
+    // unblocks the engine and the process exits, regardless of the console being
+    // parked in a blocking getline -- which no signal can reliably interrupt
+    // (glibc restarts the read internally on EINTR).
+    std::thread console([&] {
+        std::string line;
+        while (std::getline(std::cin, line)) {
+            server.submit_command(line);
+            std::istringstream tokens(line);
+            std::string verb;
+            tokens >> verb;
+            if (verb == "shutdown") {
+                break; // the queued command stops the engine
+            }
+        }
+        // stdin EOF: an interactive Ctrl+D shuts down; a non-TTY EOF (e.g.
+        // `docker run -d`) leaves the server running until a signal.
+        if (stdin_is_tty()) {
+            server.stop();
         }
     });
+    console.detach();
 
-    bool shutdown_requested = false;
-    std::string line;
-    while (std::getline(std::cin, line)) {
-        server.submit_command(line);
-        // Match the engine's tokenized `shutdown` (first word) so variants like
-        // "shutdown " or "shutdown now" also break the console loop and let us
-        // reach engine.join() instead of blocking here in getline forever.
-        std::istringstream tokens(line);
-        std::string verb;
-        tokens >> verb;
-        if (verb == "shutdown") {
-            shutdown_requested = true;
-            break;
-        }
+    try {
+        server.serve_forever(); // returns on stop() (signal / shutdown / TTY EOF)
+    } catch (const std::exception& e) {
+        std::cerr << "engine error: " << e.what() << "\n";
     }
-    // A `shutdown` command already stops the engine via the queue. On plain stdin
-    // EOF: if it's an interactive terminal (Ctrl+D) stop the server; if stdin is
-    // not a TTY (e.g. `docker run` without -i, or a piped input) keep serving
-    // until the process is signalled instead of exiting immediately.
-    if (!shutdown_requested && stdin_is_tty()) {
-        server.stop();
-    }
-    engine.join();
-    return 0;
+
+    // serve_forever has already drained and torn everything down. The detached
+    // console may still be blocked in getline touching std::cin, so exit now
+    // rather than let return-from-main tear std::cin down underneath it.
+    std::cout.flush();
+    std::_Exit(0);
 }

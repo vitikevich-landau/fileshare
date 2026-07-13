@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -28,7 +29,8 @@ struct EpollConn; // defined in epoll_server.cpp
 // M2 Server, so the catalog / registry / admin logic is not duplicated.
 class EpollServer {
 public:
-    explicit EpollServer(Catalog catalog, std::string config_path = {}, std::size_t workers = 0);
+    explicit EpollServer(Catalog catalog, std::string config_path = {}, std::size_t workers = 0,
+                         std::chrono::milliseconds drain_grace = std::chrono::seconds(5));
     ~EpollServer();
     EpollServer(const EpollServer&) = delete;
     EpollServer& operator=(const EpollServer&) = delete;
@@ -58,6 +60,9 @@ public:
         return core_.completed_downloads();
     }
     [[nodiscard]] std::size_t client_count() const { return core_.client_count(); }
+    [[nodiscard]] std::size_t downloads_in_progress() const {
+        return core_.downloads_in_progress();
+    }
 
 private:
     void accept_new();                                              // reactor thread
@@ -71,10 +76,11 @@ private:
     void close_conn(const std::shared_ptr<EpollConn>& conn);
     std::shared_ptr<EpollConn> lookup(int fd);
 
-    ServerCore  core_;
-    std::size_t worker_count_;
-    int         epoll_fd_ = -1;
-    int         listener_fd_ = -1;
+    ServerCore                core_;
+    std::size_t               worker_count_;
+    std::chrono::milliseconds drain_grace_;
+    int                       epoll_fd_ = -1;
+    int                       listener_fd_ = -1;
 
     std::mutex                                          conns_mutex_;
     std::unordered_map<int, std::shared_ptr<EpollConn>> conns_;

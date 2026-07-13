@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <memory>
@@ -23,8 +24,9 @@ namespace fileshare {
 // the Linux/Docker deployment target and shares the same ServerCore contract.
 class Server {
 public:
-    explicit Server(Catalog catalog, std::string config_path = {})
-        : core_(std::move(catalog), std::move(config_path)) {}
+    explicit Server(Catalog catalog, std::string config_path = {},
+                    std::chrono::milliseconds drain_grace = std::chrono::seconds(5))
+        : core_(std::move(catalog), std::move(config_path)), drain_grace_(drain_grace) {}
 
     std::uint16_t listen(std::uint16_t port);
     void serve_forever();
@@ -51,6 +53,9 @@ public:
         return core_.completed_downloads();
     }
     [[nodiscard]] std::size_t client_count() const { return core_.client_count(); }
+    [[nodiscard]] std::size_t downloads_in_progress() const {
+        return core_.downloads_in_progress();
+    }
 
 private:
     void handle_client(net::Socket client, std::string peer);
@@ -58,8 +63,9 @@ private:
     void handle_list(net::Socket& client);
     void handle_download(net::Socket& client, const DownloadRequest& req, ClientEntry& info);
 
-    ServerCore  core_;
-    net::Socket listener_;
+    ServerCore                core_;
+    net::Socket               listener_;
+    std::chrono::milliseconds drain_grace_;
 
     // Detached connection threads, drained to zero during teardown.
     std::atomic<int>        active_{0};

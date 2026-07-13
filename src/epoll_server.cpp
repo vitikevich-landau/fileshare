@@ -65,8 +65,11 @@ std::optional<Frame> try_take_frame(std::vector<std::uint8_t>& buf) {
 
 } // namespace
 
-EpollServer::EpollServer(Catalog catalog, std::string config_path, std::size_t workers)
-    : core_(std::move(catalog), std::move(config_path)), worker_count_(workers) {
+EpollServer::EpollServer(Catalog catalog, std::string config_path, std::size_t workers,
+                         std::chrono::milliseconds drain_grace)
+    : core_(std::move(catalog), std::move(config_path)),
+      worker_count_(workers),
+      drain_grace_(drain_grace) {
     if (worker_count_ == 0) {
         const unsigned hc = std::thread::hardware_concurrency();
         worker_count_ = hc > 0 ? hc : 4;
@@ -152,7 +155,8 @@ void EpollServer::serve_forever() {
     pool_ = std::make_unique<ThreadPool>(worker_count_);
     std::array<epoll_event, kMaxEvents> events{};
 
-    while (core_.running()) {
+    // --- Normal phase: accept new connections and serve --------------------
+    while (core_.accepting()) {
         core_.drain_commands();
         const int n = ::epoll_wait(epoll_fd_, events.data(), kMaxEvents, 200);
         if (n < 0) {
@@ -174,6 +178,41 @@ void EpollServer::serve_forever() {
             }
         }
     }
+
+    // --- Graceful drain: stop accepting, let active downloads finish -------
+    // Remove the listener from epoll (no new connections), close idle
+    // connections now, and keep servicing connection events (downloads stream to
+    // completion) until every connection is gone or drain_grace_ elapses (§3.1).
+    ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, listener_fd_, nullptr);
+    core_.registry().shutdown_idle();
+    const auto deadline = std::chrono::steady_clock::now() + drain_grace_;
+    for (;;) {
+        {
+            std::lock_guard<std::mutex> lock(conns_mutex_);
+            if (conns_.empty()) {
+                break;
+            }
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            break;
+        }
+        core_.drain_commands();
+        const int n = ::epoll_wait(epoll_fd_, events.data(), kMaxEvents, 100);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+        for (int i = 0; i < n; ++i) {
+            auto conn = lookup(events[i].data.fd);
+            if (conn) {
+                const std::uint32_t ev = events[i].events;
+                pool_->submit([this, conn, ev] { process(conn, ev); });
+            }
+        }
+    }
+    core_.registry().shutdown_all(); // force-close any stragglers past the grace
 
     // Teardown: stop the pool (drains in-flight tasks + joins) so no worker
     // touches a connection afterwards, then close everything.
@@ -274,6 +313,12 @@ void EpollServer::process(std::shared_ptr<EpollConn> conn, std::uint32_t events)
     if (!ok) {
         close_conn(conn);
         return;
+    }
+    // Clear the "downloading" alias only once the connection is fully idle -- no
+    // active download and all output (including a DOWNLOAD_DONE trailer) flushed
+    // -- so a graceful drain's shutdown_idle never cuts a finishing transfer.
+    if (!conn->downloading && conn->out_pos >= conn->outbuf.size() && conn->entry) {
+        conn->entry->set_alias("");
     }
     if (!rearm(*conn)) {
         close_conn(conn);
@@ -382,13 +427,13 @@ void EpollServer::refill_download(EpollConn& conn) {
     conn.out_pos = 0;
 
     auto finish = [&] {
+        // Queue the trailer but keep the alias set: the connection counts as
+        // "downloading" until DOWNLOAD_DONE is actually flushed (cleared in
+        // process()), so a graceful drain never cuts it just before the trailer.
         conn.outbuf = encode_download_done(conn.done_checksum);
         conn.downloading = false;
         conn.remaining = 0;
         conn.file.close();
-        if (conn.entry) {
-            conn.entry->set_alias("");
-        }
         core_.inc_completed();
     };
 

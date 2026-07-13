@@ -44,6 +44,26 @@ void ClientRegistry::shutdown_all() {
     }
 }
 
+void ClientRegistry::shutdown_idle() {
+    std::lock_guard<std::mutex> lock(mu_);
+    for (const auto& kv : clients_) {
+        if (kv.second->alias().empty()) { // empty alias == not mid-download
+            net::shutdown_handle(kv.second->handle());
+        }
+    }
+}
+
+std::size_t ClientRegistry::downloading_count() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    std::size_t n = 0;
+    for (const auto& kv : clients_) {
+        if (!kv.second->alias().empty()) {
+            ++n;
+        }
+    }
+    return n;
+}
+
 std::size_t ClientRegistry::size() const {
     std::lock_guard<std::mutex> lock(mu_);
     return clients_.size();

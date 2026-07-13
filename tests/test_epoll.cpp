@@ -186,6 +186,63 @@ TEST(Epoll, KickDisconnectsClient) {
     engine.join();
 }
 
+TEST(Epoll, GracefulShutdownLetsActiveDownloadFinish) {
+    const auto dir = etemp("graceful");
+    const std::string content = make_payload(12 * 1024 * 1024);
+    const std::string src = write_file(dir / "big.bin", content);
+    Catalog catalog;
+    ASSERT_TRUE(catalog.add(src, std::string("big")).ok);
+
+    EpollServer server(std::move(catalog), {}, 2, std::chrono::seconds(5));
+    const std::uint16_t port = server.listen(0);
+    std::thread engine([&] { server.serve_forever(); });
+
+    Client::DownloadResult result;
+    const std::string out = (dir / "out.bin").string();
+    std::thread dl([&] {
+        Client c;
+        c.connect("127.0.0.1", port);
+        result = c.download("big", out, content.size());
+        c.disconnect();
+    });
+
+    ASSERT_TRUE(wait_until([&] { return server.downloads_in_progress() == 1; }));
+    server.stop(); // graceful drain must let the in-flight download finish
+
+    dl.join();
+    EXPECT_TRUE(result.ok) << result.error;
+    EXPECT_TRUE(result.checksum_ok);
+    EXPECT_EQ(read_file(out), content);
+    engine.join();
+}
+
+TEST(Epoll, HostileFrameDropsOnlyThatConnection) {
+    const auto dir = etemp("hostile");
+    const std::string content = make_payload(64 * 1024);
+    const std::string src = write_file(dir / "blob.bin", content);
+    Catalog catalog;
+    ASSERT_TRUE(catalog.add(src, std::string("blob")).ok);
+
+    EpollServer server(std::move(catalog), {}, 2);
+    const std::uint16_t port = server.listen(0);
+    std::thread engine([&] { server.serve_forever(); });
+
+    net::Socket hostile = net::tcp_connect("127.0.0.1", port);
+    net::send_all(hostile, std::vector<std::uint8_t>{0xFF, 0, 0, 0, 0}); // unknown type
+    const std::optional<Frame> reply = net::recv_message(hostile);
+    EXPECT_FALSE(reply.has_value());
+
+    Client good;
+    good.connect("127.0.0.1", port);
+    const auto res = good.download("blob", (dir / "out.bin").string());
+    EXPECT_TRUE(res.ok) << res.error;
+    EXPECT_TRUE(res.checksum_ok);
+    good.disconnect();
+
+    server.stop();
+    engine.join();
+}
+
 TEST(Epoll, UnknownAliasReturnsError) {
     Catalog catalog;
     EpollServer server(std::move(catalog), {}, 2);
