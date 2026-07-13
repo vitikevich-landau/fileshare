@@ -1,0 +1,61 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "windows-msvc-debug",
+      "displayName": "Windows MSVC Debug",
+      "description": "Visual Studio / MSVC build for client, core and tests",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/msvc-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "FILESHARE_BUILD_TESTS": "ON"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "linux-debug",
+      "displayName": "Linux Debug (+ASan)",
+      "description": "GCC/Clang build in Docker/WSL with AddressSanitizer",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "FILESHARE_BUILD_TESTS": "ON",
+        "FILESHARE_ENABLE_ASAN": "ON"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    },
+    {
+      "name": "linux-tsan",
+      "displayName": "Linux Debug (+TSan)",
+      "description": "GCC/Clang build with ThreadSanitizer (for M2+ concurrency)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "FILESHARE_BUILD_TESTS": "ON",
+        "FILESHARE_ENABLE_TSAN": "ON"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-msvc-debug", "configurePreset": "windows-msvc-debug" },
+    { "name": "linux-debug",        "configurePreset": "linux-debug" },
+    { "name": "linux-tsan",         "configurePreset": "linux-tsan" }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-msvc-debug",
+      "configurePreset": "windows-msvc-debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}
