@@ -12,9 +12,13 @@ include(GoogleTest)
 add_executable(fileshare_tests
     test_crc32.cpp
     test_protocol.cpp
-    test_config.cpp)
+    test_config.cpp
+    test_cli.cpp
+    test_integration.cpp)
 target_link_libraries(fileshare_tests PRIVATE
     fileshare_core
+    fileshare_server_lib
+    fileshare_client_lib
     GTest::gtest_main
     fileshare_sanitizers)
 

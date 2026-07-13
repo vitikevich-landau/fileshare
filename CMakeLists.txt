@@ -44,18 +44,48 @@ FetchContent_Declare(nlohmann_json
     FIND_PACKAGE_ARGS NAMES nlohmann_json)
 FetchContent_MakeAvailable(nlohmann_json)
 
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
 # --- Core library (cross-platform: MSVC + GCC) ------------------------------
 add_library(fileshare_core
     src/crc32.cpp
     src/checksum.cpp
     src/protocol.cpp
-    src/config.cpp)
+    src/config.cpp
+    src/net.cpp
+    src/cli.cpp)
 target_include_directories(fileshare_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(fileshare_core
-    PUBLIC  nlohmann_json::nlohmann_json
+    PUBLIC  nlohmann_json::nlohmann_json Threads::Threads
+    PRIVATE fileshare_warnings fileshare_sanitizers)
+if(WIN32)
+    target_link_libraries(fileshare_core PUBLIC ws2_32)   # Winsock
+endif()
+
+# --- Server / client libraries ----------------------------------------------
+# The M1 server is portable (blocking / thread-per-connection). From M4 the
+# epoll reactor is added Linux-only; the client stays cross-platform.
+add_library(fileshare_server_lib src/server.cpp)
+target_link_libraries(fileshare_server_lib
+    PUBLIC  fileshare_core
     PRIVATE fileshare_warnings fileshare_sanitizers)
 
-# Server/client targets arrive in M1 (blocking) and M4 (epoll, Linux-only).
+add_library(fileshare_client_lib src/client.cpp)
+target_link_libraries(fileshare_client_lib
+    PUBLIC  fileshare_core
+    PRIVATE fileshare_warnings fileshare_sanitizers)
+
+# --- Executables ------------------------------------------------------------
+add_executable(fileshare_server_app src/server_main.cpp)
+target_link_libraries(fileshare_server_app
+    PRIVATE fileshare_server_lib fileshare_warnings fileshare_sanitizers)
+set_target_properties(fileshare_server_app PROPERTIES OUTPUT_NAME fileshare_server)
+
+add_executable(fileshare_client_app src/client_main.cpp)
+target_link_libraries(fileshare_client_app
+    PRIVATE fileshare_client_lib fileshare_warnings fileshare_sanitizers)
+set_target_properties(fileshare_client_app PROPERTIES OUTPUT_NAME fileshare_client)
 
 # --- Tests ------------------------------------------------------------------
 if(FILESHARE_BUILD_TESTS)
