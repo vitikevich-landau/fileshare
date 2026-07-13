@@ -66,7 +66,7 @@ endif()
 # --- Server / client libraries ----------------------------------------------
 # The M1 server is portable (blocking / thread-per-connection). From M4 the
 # epoll reactor is added Linux-only; the client stays cross-platform.
-add_library(fileshare_server_lib src/server.cpp)
+add_library(fileshare_server_lib src/server.cpp src/client_registry.cpp)
 target_link_libraries(fileshare_server_lib
     PUBLIC  fileshare_core
     PRIVATE fileshare_warnings fileshare_sanitizers)

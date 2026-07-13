@@ -64,6 +64,10 @@ private:
 // Switch a socket between blocking and non-blocking mode. Throws NetError.
 void set_nonblocking(Socket& s, bool on);
 
+// Half-close a socket by raw handle, interrupting a peer that is blocked in
+// recv/send on it (used by `kick`). No-op on an invalid handle; never throws.
+void shutdown_handle(std::intptr_t handle) noexcept;
+
 // Block up to timeout_ms for `s` to become readable. Returns true if readable,
 // false on timeout. Throws NetError on a socket error. Lets an accept loop stay
 // responsive to a stop flag without closing the socket across threads.

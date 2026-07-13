@@ -14,7 +14,8 @@ add_executable(fileshare_tests
     test_protocol.cpp
     test_config.cpp
     test_cli.cpp
-    test_integration.cpp)
+    test_integration.cpp
+    test_concurrency.cpp)
 target_link_libraries(fileshare_tests PRIVATE
     fileshare_core
     fileshare_server_lib

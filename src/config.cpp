@@ -69,24 +69,33 @@ Catalog Catalog::load(const std::string& config_path) {
 }
 
 void Catalog::save(const std::string& config_path) const {
-    nlohmann::json j;
-    j["version"] = kConfigVersion;
-    j["shared_files"] = nlohmann::json::array();
-    for (const auto& e : entries_) {
-        nlohmann::json item;
-        item["alias"]         = e.alias;
-        item["path"]          = e.path;
-        item["size_bytes"]    = e.size_bytes;
-        item["checksum_algo"] = e.checksum_algo;
-        item["checksum"]      = to_hex(e.checksum);
-        j["shared_files"].push_back(std::move(item));
+    // Build + serialise inside a try so a nlohmann exception (e.g. dump()
+    // throwing type_error on a non-UTF-8 alias/path) surfaces as ConfigError,
+    // matching load()'s contract instead of escaping as a raw json exception.
+    std::string serialized;
+    try {
+        nlohmann::json j;
+        j["version"] = kConfigVersion;
+        j["shared_files"] = nlohmann::json::array();
+        for (const auto& e : entries_) {
+            nlohmann::json item;
+            item["alias"]         = e.alias;
+            item["path"]          = e.path;
+            item["size_bytes"]    = e.size_bytes;
+            item["checksum_algo"] = e.checksum_algo;
+            item["checksum"]      = to_hex(e.checksum);
+            j["shared_files"].push_back(std::move(item));
+        }
+        serialized = j.dump(2);
+    } catch (const nlohmann::json::exception& e) {
+        throw ConfigError(std::string("cannot serialise config: ") + e.what());
     }
 
     std::ofstream out(config_path, std::ios::binary | std::ios::trunc);
     if (!out) {
         throw ConfigError("cannot open config for writing: " + config_path);
     }
-    out << j.dump(2) << '\n';
+    out << serialized << '\n';
     if (!out) {
         throw ConfigError("failed to write config: " + config_path);
     }

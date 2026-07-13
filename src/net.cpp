@@ -306,6 +306,17 @@ void send_message(Socket& s, MessageType type, const std::uint8_t* payload, std:
     }
 }
 
+void shutdown_handle(std::intptr_t handle) noexcept {
+    if (handle == kInvalidSocket) {
+        return;
+    }
+#ifdef _WIN32
+    ::shutdown(static_cast<native_socket>(handle), SD_BOTH);
+#else
+    ::shutdown(static_cast<native_socket>(handle), SHUT_RDWR);
+#endif
+}
+
 std::optional<Frame> recv_message(Socket& s) {
     std::array<std::uint8_t, HEADER_SIZE> hdr{};
     const std::size_t got = recv_exact(s, hdr.data(), hdr.size());

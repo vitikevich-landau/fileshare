@@ -3,7 +3,9 @@
 #include <exception>
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -101,7 +103,7 @@ int main(int argc, char** argv) {
                   << to_hex(e.checksum).substr(0, 8) << "\n";
     }
 
-    Server server(std::move(catalog));
+    Server server(std::move(catalog), config_path);
     std::uint16_t bound = 0;
     try {
         bound = server.listen(port);
@@ -110,12 +112,33 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::cout << "serving on port " << bound << " (Ctrl+C to stop)\n";
-    try {
-        server.serve_forever();
-    } catch (const std::exception& e) {
-        std::cerr << "server stopped: " << e.what() << "\n";
-        return 1;
+    std::cout << "serving on port " << bound << " -- admin console ready (type 'help')\n";
+
+    // Network engine runs on its own thread; the main thread is the admin
+    // console reading stdin and enqueuing commands (§6). EOF or `shutdown`
+    // stops the engine, which we then join cleanly.
+    std::thread engine([&] {
+        try {
+            server.serve_forever();
+        } catch (const std::exception& e) {
+            std::cerr << "engine error: " << e.what() << "\n";
+        }
+    });
+
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        server.submit_command(line);
+        // Match the engine's tokenized `shutdown` (first word) so variants like
+        // "shutdown " or "shutdown now" also break the console loop and let us
+        // reach engine.join() instead of blocking here in getline forever.
+        std::istringstream tokens(line);
+        std::string verb;
+        tokens >> verb;
+        if (verb == "shutdown") {
+            break;
+        }
     }
+    server.stop(); // covers EOF on stdin without an explicit `shutdown`
+    engine.join();
     return 0;
 }

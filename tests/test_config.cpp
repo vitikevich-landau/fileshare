@@ -152,6 +152,19 @@ TEST(Config, LoadMissingVersionThrowsConfigError) {
     EXPECT_THROW((void)Catalog::load(cfg), ConfigError);
 }
 
+// Regression: save() must translate a nlohmann dump() failure (e.g. a non-UTF-8
+// alias) into ConfigError, not let a raw json exception escape and, via an
+// admin command, tear down the server engine (found by the M2 review).
+TEST(Config, SaveInvalidUtf8AliasThrowsConfigError) {
+    const auto dir = make_temp_dir("saveutf8");
+    const std::string f = write_file(dir / "x.bin", "payload");
+    Catalog cat;
+    // add() does no UTF-8 validation, so an invalid-UTF-8 alias is accepted...
+    ASSERT_TRUE(cat.add(f, std::string("\xff\xfe\x80")).ok);
+    // ...and only blows up at serialisation time, which must be a ConfigError.
+    EXPECT_THROW(cat.save((dir / "config.json").string()), ConfigError);
+}
+
 TEST(Config, LoadEntryWrongFieldTypeThrowsConfigError) {
     const auto dir = make_temp_dir("badentry");
     const std::string cfg = write_file(
