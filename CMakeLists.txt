@@ -13,6 +13,7 @@ option(FILESHARE_BUILD_TESTS  "Build unit tests"        ON)
 option(FILESHARE_ENABLE_ASAN  "Enable AddressSanitizer" OFF)
 option(FILESHARE_ENABLE_TSAN  "Enable ThreadSanitizer"  OFF)
 option(FILESHARE_USE_SHA256   "Use SHA-256 (OpenSSL) instead of CRC32 for file checksums" OFF)
+option(FILESHARE_USE_COROUTINES "Use the C++20 coroutine epoll server (Linux)" OFF)
 
 # --- Warnings (zero-warnings policy, §8) ------------------------------------
 add_library(fileshare_warnings INTERFACE)
@@ -78,6 +79,10 @@ add_library(fileshare_server_lib src/server.cpp src/server_core.cpp src/client_r
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_sources(fileshare_server_lib PRIVATE src/epoll_server.cpp)  # epoll reactor (M4)
     target_compile_definitions(fileshare_server_lib PUBLIC FILESHARE_HAVE_EPOLL)
+    if(FILESHARE_USE_COROUTINES)
+        target_sources(fileshare_server_lib PRIVATE src/epoll_coro_server.cpp)  # coroutine reactor (M6)
+        target_compile_definitions(fileshare_server_lib PUBLIC FILESHARE_USE_COROUTINES)
+    endif()
 endif()
 target_link_libraries(fileshare_server_lib
     PUBLIC  fileshare_core

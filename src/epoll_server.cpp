@@ -136,7 +136,10 @@ std::uint16_t EpollServer::listen(std::uint16_t port) {
         throw net::NetError("epoll_create1 failed: " + strerr(e));
     }
     epoll_event ev{};
-    ev.events = EPOLLIN; // listener is level-triggered; accept_new() drains it
+    // Edge-triggered: accept_new() drains the backlog to EAGAIN, so an accept
+    // error we cannot recover (e.g. EMFILE on fd exhaustion) will not leave a
+    // still-readable listener re-firing and spinning the reactor at 100% CPU.
+    ev.events = EPOLLIN | EPOLLET;
     ev.data.fd = listener_fd_;
     if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, listener_fd_, &ev) != 0) {
         const int e = errno;

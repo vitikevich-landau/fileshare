@@ -16,7 +16,9 @@
 #include "fileshare/config.hpp"
 #include "fileshare/server.hpp"
 
-#ifdef FILESHARE_HAVE_EPOLL
+#if defined(FILESHARE_USE_COROUTINES)
+#  include "fileshare/epoll_coro_server.hpp"
+#elif defined(FILESHARE_HAVE_EPOLL)
 #  include "fileshare/epoll_server.hpp"
 #endif
 
@@ -42,7 +44,9 @@ bool stdin_is_tty() {
 // On Linux the deployment target is the epoll reactor (M4); elsewhere (Windows
 // development) the portable thread-per-connection server is used. Both share the
 // same listen / serve_forever / stop / submit_command interface.
-#ifdef FILESHARE_HAVE_EPOLL
+#if defined(FILESHARE_USE_COROUTINES)
+using ServerImpl = CoroServer;
+#elif defined(FILESHARE_HAVE_EPOLL)
 using ServerImpl = EpollServer;
 #else
 using ServerImpl = Server;
