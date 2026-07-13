@@ -1,0 +1,10 @@
+# Normalize all text files to LF in the repo and on checkout, so the same
+# sources build identically on Windows (MSVC) and Linux (GCC).
+* text=auto eol=lf
+
+# Explicit binaries (never touch line endings).
+*.iso  binary
+*.png  binary
+*.jpg  binary
+*.gz   binary
+*.zip  binary
