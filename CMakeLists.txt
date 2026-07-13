@@ -87,6 +87,11 @@ target_link_libraries(fileshare_client_app
     PRIVATE fileshare_client_lib fileshare_warnings fileshare_sanitizers)
 set_target_properties(fileshare_client_app PROPERTIES OUTPUT_NAME fileshare_client)
 
+# Load-test client (M3): drives N concurrent downloads to measure throughput.
+add_executable(fileshare_loadtest src/loadtest_main.cpp)
+target_link_libraries(fileshare_loadtest
+    PRIVATE fileshare_core fileshare_warnings fileshare_sanitizers)
+
 # --- Tests ------------------------------------------------------------------
 if(FILESHARE_BUILD_TESTS)
     enable_testing()
