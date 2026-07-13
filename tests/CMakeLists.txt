@@ -19,6 +19,7 @@ add_executable(fileshare_tests
     test_integration.cpp
     test_concurrency.cpp
     test_faults.cpp
+    test_resume.cpp
     test_epoll.cpp)
 target_link_libraries(fileshare_tests PRIVATE
     fileshare_core
