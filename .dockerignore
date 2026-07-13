@@ -1,0 +1,13 @@
+.git
+build/
+out/
+cmake-build-*/
+docs/
+scripts/
+tests/
+data/
+share/
+*.md
+.gitignore
+.gitattributes
+docker-compose.yml

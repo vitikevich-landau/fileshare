@@ -54,7 +54,8 @@ add_library(fileshare_core
     src/protocol.cpp
     src/config.cpp
     src/net.cpp
-    src/cli.cpp)
+    src/cli.cpp
+    src/thread_pool.cpp)
 target_include_directories(fileshare_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(fileshare_core
     PUBLIC  nlohmann_json::nlohmann_json Threads::Threads
@@ -66,7 +67,11 @@ endif()
 # --- Server / client libraries ----------------------------------------------
 # The M1 server is portable (blocking / thread-per-connection). From M4 the
 # epoll reactor is added Linux-only; the client stays cross-platform.
-add_library(fileshare_server_lib src/server.cpp src/client_registry.cpp)
+add_library(fileshare_server_lib src/server.cpp src/server_core.cpp src/client_registry.cpp)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(fileshare_server_lib PRIVATE src/epoll_server.cpp)  # epoll reactor (M4)
+    target_compile_definitions(fileshare_server_lib PUBLIC FILESHARE_HAVE_EPOLL)
+endif()
 target_link_libraries(fileshare_server_lib
     PUBLIC  fileshare_core
     PRIVATE fileshare_warnings fileshare_sanitizers)

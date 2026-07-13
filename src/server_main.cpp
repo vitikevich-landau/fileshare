@@ -14,7 +14,37 @@
 #include "fileshare/config.hpp"
 #include "fileshare/server.hpp"
 
+#ifdef FILESHARE_HAVE_EPOLL
+#  include "fileshare/epoll_server.hpp"
+#endif
+
+#ifdef _WIN32
+#  include <io.h>
+#  include <cstdio>
+#else
+#  include <unistd.h>
+#endif
+
 using namespace fileshare;
+
+namespace {
+bool stdin_is_tty() {
+#ifdef _WIN32
+    return _isatty(_fileno(stdin)) != 0;
+#else
+    return ::isatty(STDIN_FILENO) != 0;
+#endif
+}
+} // namespace
+
+// On Linux the deployment target is the epoll reactor (M4); elsewhere (Windows
+// development) the portable thread-per-connection server is used. Both share the
+// same listen / serve_forever / stop / submit_command interface.
+#ifdef FILESHARE_HAVE_EPOLL
+using ServerImpl = EpollServer;
+#else
+using ServerImpl = Server;
+#endif
 
 namespace {
 
@@ -103,7 +133,7 @@ int main(int argc, char** argv) {
                   << to_hex(e.checksum).substr(0, 8) << "\n";
     }
 
-    Server server(std::move(catalog), config_path);
+    ServerImpl server(std::move(catalog), config_path);
     std::uint16_t bound = 0;
     try {
         bound = server.listen(port);
@@ -125,6 +155,7 @@ int main(int argc, char** argv) {
         }
     });
 
+    bool shutdown_requested = false;
     std::string line;
     while (std::getline(std::cin, line)) {
         server.submit_command(line);
@@ -135,10 +166,17 @@ int main(int argc, char** argv) {
         std::string verb;
         tokens >> verb;
         if (verb == "shutdown") {
+            shutdown_requested = true;
             break;
         }
     }
-    server.stop(); // covers EOF on stdin without an explicit `shutdown`
+    // A `shutdown` command already stops the engine via the queue. On plain stdin
+    // EOF: if it's an interactive terminal (Ctrl+D) stop the server; if stdin is
+    // not a TTY (e.g. `docker run` without -i, or a piped input) keep serving
+    // until the process is signalled instead of exiting immediately.
+    if (!shutdown_requested && stdin_is_tty()) {
+        server.stop();
+    }
     engine.join();
     return 0;
 }

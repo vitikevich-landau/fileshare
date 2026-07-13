@@ -1,0 +1,19 @@
+# Run the epoll file-share server in a Linux container; a Windows/macOS client
+# connects to localhost:5555.
+#
+#   docker compose up --build        # start the server
+#   # then, from the host:  fileshare_client  ->  connect 127.0.0.1 5555
+#
+# Put files to share (and config.json) under ./data. Register them by editing
+# config.json, or start with:  docker compose run --rm fileshare \
+#     --port 5555 --config /data/config.json --add /data/yourfile
+services:
+  fileshare:
+    build: .
+    ports:
+      - "5555:5555"
+    volumes:
+      - ./data:/data     # shared files + persistent config.json
+    stdin_open: true     # keep the admin console (stdin) attached
+    tty: true
+    restart: unless-stopped
