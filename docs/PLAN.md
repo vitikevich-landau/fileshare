@@ -29,7 +29,7 @@
 | **M3** ✅ | Нагрузочный тест (`scripts/loadtest`): N параллельных закачек, замер throughput, потолок thread-per-connection. | Цифры + вывод, обосновывающий M4. **Готово**: пик на N≈числу ядер, плато + деградация дальше — см. [loadtest-results.md](loadtest-results.md). |
 | **M4** ✅ | epoll + thread pool (Linux-only). `Dockerfile` + `docker-compose.yml`, проброс порта на `localhost`. Клиент на Windows коннектится к контейнеру. | Функционал = M2 на epoll; нагрузочный тест лучше. TSan чистый. **Готово**: 61 тест ASan+TSan, epoll держит throughput без провала M2, deployment-смоук (контейнер + клиент) byte-exact. |
 | **M5** ✅ | Устойчивость: битые фреймы (рвём только это соединение), обрывы (`recv==0`/`ECONNRESET`) без падения, `ERROR FILE_NOT_FOUND`/`UNSUPPORTED_OFFSET`, `kick`, graceful `shutdown`. `remove` во время закачки — документированное поведение. | Fault-injection тесты проходят. **Готово**: 68 тестов ASan+TSan, graceful drain обоих серверов + SIGTERM (`docker stop` ~400мс, `-d` и `-it`). |
-| **M6** (стретч) | Докачка по `offset`; опционально event loop на C++20 корутинах; апгрейд CRC32→SHA-256. | По желанию. |
+| **M6** (стретч) ✅ | Докачка по `offset`; опционально event loop на C++20 корутинах; апгрейд CRC32→SHA-256. | **Все три сделаны**: SHA-256 (`cb18d6d`), докачка (`902e98f`), корутинный сервер (`c4c68c0`). Каждый под ASan+TSan, adversarial-ревью. |
 
 ## Структура репозитория
 
