@@ -3,9 +3,28 @@
 #include <fstream>
 #include <vector>
 
-#include "fileshare/crc32.hpp"
-
 namespace fileshare {
+
+// --- FileHasher (algorithm chosen at build time) ----------------------------
+void FileHasher::update(const std::uint8_t* data, std::size_t len) {
+    impl_.update(data, len);
+}
+
+Checksum FileHasher::value() const {
+#ifdef FILESHARE_USE_SHA256
+    return impl_.value(); // already a full 32-byte digest
+#else
+    return checksum_from_crc32(impl_.value());
+#endif
+}
+
+const char* FileHasher::algorithm() noexcept {
+#ifdef FILESHARE_USE_SHA256
+    return "sha256";
+#else
+    return "crc32";
+#endif
+}
 
 Checksum checksum_from_crc32(std::uint32_t crc) noexcept {
     Checksum sum{};   // zero-initialised
@@ -49,7 +68,7 @@ std::optional<Checksum> checksum_from_hex(std::string_view hex) {
     return sum;
 }
 
-FileDigest compute_file_digest_crc32(const std::string& path) {
+FileDigest compute_file_digest(const std::string& path) {
     FileDigest result;
     std::ifstream in(path, std::ios::binary);
     if (!in) {
@@ -57,15 +76,15 @@ FileDigest compute_file_digest_crc32(const std::string& path) {
         return result;
     }
 
-    Crc32 crc;
+    FileHasher hasher;
     std::vector<char> buf(64 * 1024);
     std::uint64_t total = 0;
     while (in) {
         in.read(buf.data(), static_cast<std::streamsize>(buf.size()));
         const std::streamsize got = in.gcount();
         if (got > 0) {
-            crc.update(reinterpret_cast<const std::uint8_t*>(buf.data()),
-                       static_cast<std::size_t>(got));
+            hasher.update(reinterpret_cast<const std::uint8_t*>(buf.data()),
+                          static_cast<std::size_t>(got));
             total += static_cast<std::uint64_t>(got);
         }
     }
@@ -76,8 +95,8 @@ FileDigest compute_file_digest_crc32(const std::string& path) {
 
     result.ok = true;
     result.size = total;
-    result.checksum = checksum_from_crc32(crc.value());
-    result.algo = "crc32";
+    result.checksum = hasher.value();
+    result.algo = FileHasher::algorithm();
     return result;
 }
 

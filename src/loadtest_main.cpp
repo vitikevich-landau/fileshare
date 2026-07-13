@@ -15,7 +15,6 @@
 
 #include "fileshare/checksum.hpp"
 #include "fileshare/cli.hpp"
-#include "fileshare/crc32.hpp"
 #include "fileshare/net.hpp"
 #include "fileshare/protocol.hpp"
 
@@ -37,7 +36,7 @@ ClientResult download_discard(const std::string& host, std::uint16_t port,
         net::Socket sock = net::tcp_connect(host, port);
         for (int i = 0; i < repeats; ++i) {
             net::send_all(sock, encode_download_request(DownloadRequest{alias, 0}));
-            Crc32 crc;
+            FileHasher hasher;
             std::uint64_t got = 0;
             bool done = false;
             while (!done) {
@@ -47,13 +46,13 @@ ClientResult download_discard(const std::string& host, std::uint16_t port,
                 }
                 switch (frame->type) {
                     case MessageType::CHUNK_DATA:
-                        crc.update(frame->payload.data(), frame->payload.size());
+                        hasher.update(frame->payload.data(), frame->payload.size());
                         got += frame->payload.size();
                         break;
                     case MessageType::DOWNLOAD_DONE: {
                         const Checksum server =
                             parse_download_done(frame->payload.data(), frame->payload.size());
-                        if (server != checksum_from_crc32(crc.value())) {
+                        if (server != hasher.value()) {
                             return result; // checksum mismatch
                         }
                         done = true;

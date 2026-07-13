@@ -12,6 +12,7 @@ endif()
 option(FILESHARE_BUILD_TESTS  "Build unit tests"        ON)
 option(FILESHARE_ENABLE_ASAN  "Enable AddressSanitizer" OFF)
 option(FILESHARE_ENABLE_TSAN  "Enable ThreadSanitizer"  OFF)
+option(FILESHARE_USE_SHA256   "Use SHA-256 (OpenSSL) instead of CRC32 for file checksums" OFF)
 
 # --- Warnings (zero-warnings policy, §8) ------------------------------------
 add_library(fileshare_warnings INTERFACE)
@@ -62,6 +63,12 @@ target_link_libraries(fileshare_core
     PRIVATE fileshare_warnings fileshare_sanitizers)
 if(WIN32)
     target_link_libraries(fileshare_core PUBLIC ws2_32)   # Winsock
+endif()
+if(FILESHARE_USE_SHA256)
+    find_package(OpenSSL REQUIRED)
+    target_sources(fileshare_core PRIVATE src/sha256.cpp)
+    target_compile_definitions(fileshare_core PUBLIC FILESHARE_USE_SHA256)
+    target_link_libraries(fileshare_core PUBLIC OpenSSL::Crypto)
 endif()
 
 # --- Server / client libraries ----------------------------------------------

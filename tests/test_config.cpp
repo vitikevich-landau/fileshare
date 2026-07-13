@@ -37,8 +37,10 @@ TEST(Config, AddComputesSizeAndChecksum) {
     ASSERT_TRUE(r.ok) << r.error;
     EXPECT_EQ(r.entry.alias, "hello.txt");
     EXPECT_EQ(r.entry.size_bytes, 9u);
-    EXPECT_EQ(r.entry.checksum_algo, "crc32");
+    EXPECT_EQ(r.entry.checksum_algo, FileHasher::algorithm());
+#ifndef FILESHARE_USE_SHA256
     EXPECT_EQ(r.entry.checksum, checksum_from_crc32(0xCBF43926u));
+#endif
     EXPECT_EQ(cat.size(), 1u);
 }
 
@@ -103,11 +105,12 @@ TEST(Config, SaveLoadRoundTrip) {
     const auto one = loaded.find("one.txt");
     ASSERT_TRUE(one.has_value());
     EXPECT_EQ(one->size_bytes, 9u);
-    EXPECT_EQ(one->checksum, checksum_from_crc32(0xCBF43926u));
+    // Round-trip preserves the checksum, whatever algorithm the build uses.
+    EXPECT_EQ(one->checksum, compute_file_digest(f1).checksum);
 
     const auto fox = loaded.find("fox");
     ASSERT_TRUE(fox.has_value());
-    EXPECT_EQ(fox->checksum, checksum_from_crc32(0x414FA339u));
+    EXPECT_EQ(fox->checksum, compute_file_digest(f2).checksum);
 }
 
 TEST(Config, LoadMissingFileIsEmpty) {

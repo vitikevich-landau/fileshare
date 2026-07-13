@@ -11,6 +11,7 @@ include(GoogleTest)
 
 add_executable(fileshare_tests
     test_crc32.cpp
+    test_sha256.cpp
     test_protocol.cpp
     test_config.cpp
     test_cli.cpp

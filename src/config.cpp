@@ -120,7 +120,7 @@ AddOutcome Catalog::add(const std::string& path,
         return outcome;
     }
 
-    const FileDigest digest = compute_file_digest_crc32(path);
+    const FileDigest digest = compute_file_digest(path);
     if (!digest.ok) {
         outcome.error = digest.error;
         return outcome;

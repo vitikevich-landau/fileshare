@@ -7,7 +7,6 @@
 #include <utility>
 
 #include "fileshare/checksum.hpp"
-#include "fileshare/crc32.hpp"
 
 namespace fileshare {
 
@@ -47,7 +46,7 @@ Client::DownloadResult Client::download(const std::string& alias, const std::str
         return res;
     }
 
-    Crc32 crc;
+    FileHasher hasher;
     std::uint64_t received = 0;
 
     // Close and delete the temp file, then return `res` with an error set.
@@ -73,7 +72,7 @@ Client::DownloadResult Client::download(const std::string& alias, const std::str
                     if (!out) {
                         return fail("write error on output file");
                     }
-                    crc.update(frame->payload.data(), frame->payload.size());
+                    hasher.update(frame->payload.data(), frame->payload.size());
                     received += frame->payload.size();
                 }
                 if (progress) {
@@ -84,7 +83,7 @@ Client::DownloadResult Client::download(const std::string& alias, const std::str
             case MessageType::DOWNLOAD_DONE: {
                 const Checksum server_sum =
                     parse_download_done(frame->payload.data(), frame->payload.size());
-                const Checksum local_sum = checksum_from_crc32(crc.value());
+                const Checksum local_sum = hasher.value();
                 if (server_sum != local_sum) {
                     auto r = fail("checksum mismatch");
                     return r; // res.ok stays false; destination untouched
