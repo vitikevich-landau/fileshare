@@ -5,6 +5,14 @@
 #include <fstream>
 #include <system_error>
 
+#if defined(__linux__)
+#  include <cerrno>
+#  include <fcntl.h>
+#  include <sys/syscall.h>
+#  include <unistd.h>
+#  include <ext/stdio_filebuf.h>   // __gnu_cxx::stdio_filebuf (GCC/Clang libstdc++)
+#endif
+
 #include <nlohmann/json.hpp>
 
 #include "fileshare/checksum.hpp"
@@ -64,6 +72,85 @@ Vfs::Vfs(const fs::path& share_root) {
         throw FsError(ErrCode::INTERNAL_ERROR,
                       "cannot resolve share_root: " + share_root.string() + ": " + ec.message());
     }
+#if defined(__linux__)
+    // Hold an O_PATH handle to the root for openat2-confined opens.
+    root_fd_ = ::open(root_.c_str(), O_PATH | O_DIRECTORY | O_CLOEXEC);
+#endif
+}
+
+Vfs::~Vfs() {
+#if defined(__linux__)
+    if (root_fd_ >= 0) ::close(root_fd_);
+#endif
+}
+
+// --- Safe open beneath the root ---------------------------------------------
+#if defined(__linux__)
+namespace {
+// openat2 is not always wrapped by glibc; call the syscall directly.
+struct open_how_t { std::uint64_t flags; std::uint64_t mode; std::uint64_t resolve; };
+#  ifndef RESOLVE_BENEATH
+constexpr std::uint64_t RESOLVE_BENEATH_ = 0x08;
+#  else
+constexpr std::uint64_t RESOLVE_BENEATH_ = RESOLVE_BENEATH;
+#  endif
+#  ifndef RESOLVE_NO_MAGICLINKS
+constexpr std::uint64_t RESOLVE_NO_MAGICLINKS_ = 0x02;
+#  else
+constexpr std::uint64_t RESOLVE_NO_MAGICLINKS_ = RESOLVE_NO_MAGICLINKS;
+#  endif
+
+int openat2_beneath(int dirfd, const char* path) {
+    open_how_t how{};
+    how.flags = static_cast<std::uint64_t>(O_RDONLY | O_CLOEXEC);
+    how.resolve = RESOLVE_BENEATH_ | RESOLVE_NO_MAGICLINKS_;
+    return static_cast<int>(::syscall(SYS_openat2, dirfd, path, &how, sizeof(how)));
+}
+
+// istream that owns the filebuf wrapping an fd, so the fd closes with the stream.
+struct FdIStream : std::istream {
+    __gnu_cxx::stdio_filebuf<char> buf;
+    explicit FdIStream(int fd)
+        : std::istream(nullptr), buf(fd, std::ios::in | std::ios::binary) { rdbuf(&buf); }
+};
+} // namespace
+#endif
+
+std::unique_ptr<std::istream> Vfs::open_beneath(const std::string& vpath) const {
+    const std::string norm = normalize_vpath(vpath);   // rejects '..'/NUL
+
+#if defined(__linux__)
+    if (root_fd_ >= 0) {
+        const std::string rel = (norm == "/") ? std::string(".") : norm.substr(1);
+        const int fd = openat2_beneath(root_fd_, rel.c_str());
+        if (fd >= 0) {
+            return std::make_unique<FdIStream>(fd);
+        }
+        const int e = errno;
+        if (e == EXDEV || e == ELOOP) {
+            throw FsError(ErrCode::ACCESS_DENIED, "path escapes share root");
+        }
+        if (e == ENOENT || e == ENOTDIR) {
+            throw FsError(ErrCode::FILE_NOT_FOUND, "no such path: " + norm);
+        }
+        if (e != ENOSYS) {   // any other real error (EISDIR handled by reader)
+            if (e == EISDIR) {
+                // openat2 with O_RDONLY on a dir succeeds on Linux; kept for safety.
+                throw FsError(ErrCode::IS_A_DIRECTORY, "is a directory: " + norm);
+            }
+            throw FsError(ErrCode::INTERNAL_ERROR, "open failed: " + norm);
+        }
+        // ENOSYS: kernel without openat2 -> fall through to the portable path.
+    }
+#endif
+    // Portable fallback: resolve() (canonical, in-root) then open by path. Has a
+    // narrow residual reopen window on non-openat2 platforms; documented.
+    const fs::path real = resolve(norm);
+    auto s = std::make_unique<std::ifstream>(real, std::ios::binary);
+    if (!*s) {
+        throw FsError(ErrCode::FILE_NOT_FOUND, "cannot open: " + norm);
+    }
+    return s;
 }
 
 // --- Resolution (the security choke point) ----------------------------------
@@ -203,17 +290,22 @@ ChecksumResponse Vfs::checksum(const std::string& vpath) {
         }
     }
 
-    // Compute outside the lock (hashing a big file can take a while).
-    const FileDigest digest = compute_file_digest(real.string());
-    if (!digest.ok) {
-        throw FsError(ErrCode::INTERNAL_ERROR, "checksum failed: " + digest.error);
+    // Compute outside the lock (hashing a big file can take a while). Read the
+    // content through the confined open so a hash can never be produced for a
+    // file outside the share root (no hash oracle via a swapped symlink).
+    auto in = open_beneath(norm);
+    FileHasher hasher;
+    std::vector<char> hbuf(64 * 1024);
+    while (in->read(hbuf.data(), static_cast<std::streamsize>(hbuf.size())) || in->gcount() > 0) {
+        hasher.update(reinterpret_cast<const std::uint8_t*>(hbuf.data()),
+                      static_cast<std::size_t>(in->gcount()));
     }
 
     CacheEntry ce;
-    ce.size = digest.size;
+    ce.size = size;
     ce.mtime = mtime;
-    ce.algo = algo_code(digest.algo);
-    ce.checksum = digest.checksum;
+    ce.algo = algo_code(FileHasher::algorithm());
+    ce.checksum = hasher.value();
     {
         std::lock_guard<std::mutex> lk(cache_mutex_);
         cache_[norm] = ce;

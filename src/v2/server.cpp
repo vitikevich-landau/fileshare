@@ -36,20 +36,19 @@ void handle_download(net::Socket& sock, ServerContext& ctx, Session& session, co
     const DownloadRequest req = parse_download_request(fr.payload.data(), fr.payload.size());
     const std::string norm = normalize_vpath(req.path);
 
-    // Resolve once (canonical, proven in-root) and derive everything from the
-    // single open handle: size and bytes then come from the same inode, so a
-    // concurrent rename can't make us stream one file while reporting another's
-    // size. (Full defense against a parent-component symlink swap needs
-    // openat/O_NOFOLLOW; tracked for the multi-tenant/upload milestone.)
-    const std::filesystem::path real = ctx.vfs().resolve(norm);
-    std::error_code ec;
-    if (std::filesystem::is_directory(real, ec)) {
-        throw FsError(ErrCode::IS_A_DIRECTORY, "cannot download a directory");
+    // Friendly directory error (metadata only). The streamed CONTENT comes from
+    // open_beneath() below, which opens confined beneath the share root
+    // (openat2 RESOLVE_BENEATH on Linux), so a concurrent symlink swap of an
+    // intermediate component cannot make us stream a file outside the root.
+    {
+        std::error_code ec;
+        if (std::filesystem::is_directory(ctx.vfs().resolve(norm), ec)) {
+            throw FsError(ErrCode::IS_A_DIRECTORY, "cannot download a directory");
+        }
     }
-    std::ifstream in(real, std::ios::binary);
-    if (!in) {
-        throw FsError(ErrCode::FILE_NOT_FOUND, "cannot open: " + norm);
-    }
+    std::unique_ptr<std::istream> in_ptr = ctx.vfs().open_beneath(norm);   // throws FsError
+    std::istream& in = *in_ptr;
+
     in.seekg(0, std::ios::end);
     const std::streamoff endpos = in.tellg();
     if (endpos < 0) {

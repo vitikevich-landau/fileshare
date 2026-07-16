@@ -10,6 +10,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <istream>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -43,6 +45,17 @@ public:
     // Canonicalises share_root, creating it if missing. Throws FsError on a
     // path that cannot be created or resolved.
     explicit Vfs(const std::filesystem::path& share_root);
+    ~Vfs();
+    Vfs(const Vfs&) = delete;
+    Vfs& operator=(const Vfs&) = delete;
+
+    // Open a regular file for reading, confined beneath share_root even against
+    // a concurrent symlink swap of an intermediate component (Linux openat2 with
+    // RESOLVE_BENEATH; falls back to resolve()+open elsewhere). The returned
+    // stream reads content that is guaranteed to come from inside the root, so
+    // callers never re-open a path string after a separate check (closes the
+    // resolve()->reopen TOCTOU for file content). Throws FsError.
+    [[nodiscard]] std::unique_ptr<std::istream> open_beneath(const std::string& vpath) const;
 
     // Directory listing (dirs first, then files, name-sorted). Throws
     // FsError(NOT_A_DIRECTORY / FILE_NOT_FOUND / ACCESS_DENIED).
@@ -82,6 +95,7 @@ private:
     };
 
     std::filesystem::path root_;   // canonical share-root
+    int                   root_fd_ = -1;   // O_PATH dir fd for openat2 (Linux)
 
     mutable std::mutex                              cache_mutex_;
     std::unordered_map<std::string, CacheEntry>     cache_;

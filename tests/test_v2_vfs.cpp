@@ -196,6 +196,52 @@ TEST(V2Vfs, InternalSymlinkIsAllowed) {
     EXPECT_EQ(r.filename().string(), "readme.txt");  // canonicalised to the target
 }
 
+// --- Confined open (open_beneath) -------------------------------------------
+TEST(V2Vfs, OpenBeneathReadsFile) {
+    TempTree t;
+    Vfs vfs(t.root());
+    auto in = vfs.open_beneath("/readme.txt");
+    std::string content((std::istreambuf_iterator<char>(*in)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(content, "hello world");
+}
+
+TEST(V2Vfs, OpenBeneathRejectsTraversal) {
+    TempTree t;
+    Vfs vfs(t.root());
+    EXPECT_THROW((void)vfs.open_beneath("/../../etc/passwd"), FsError);
+}
+
+TEST(V2Vfs, OpenBeneathBlocksSymlinkEscape) {
+    TempTree t;
+    std::error_code ec;
+    fs::create_symlink("/etc/hostname", t.root() / "escape", ec);
+    if (ec) GTEST_SKIP() << "symlinks not supported here";
+    Vfs vfs(t.root());
+    try {
+        (void)vfs.open_beneath("/escape");
+        FAIL() << "expected FsError";
+    } catch (const FsError& e) {
+        EXPECT_EQ(e.code(), ErrCode::ACCESS_DENIED);
+    }
+}
+
+TEST(V2Vfs, OpenBeneathBlocksSymlinkedParentComponent) {
+    // The TOCTOU class: an intermediate directory component is a symlink that
+    // points outside the root. A path-string reopen would follow it; the
+    // confined open must refuse. This is deterministic (no race needed): the
+    // symlink is already in place when we open.
+    TempTree t;
+    std::error_code ec;
+    fs::create_directories("/tmp/fileshare_outside_target", ec);
+    std::ofstream("/tmp/fileshare_outside_target/secret.txt") << "OUTSIDE";
+    fs::create_symlink("/tmp/fileshare_outside_target", t.root() / "via", ec);
+    if (ec) GTEST_SKIP() << "symlinks not supported here";
+    Vfs vfs(t.root());
+    // "/via/secret.txt" traverses an escaping symlink component.
+    EXPECT_THROW((void)vfs.open_beneath("/via/secret.txt"), FsError);
+    fs::remove_all("/tmp/fileshare_outside_target", ec);
+}
+
 // --- Checksum + cache -------------------------------------------------------
 TEST(V2Vfs, ChecksumStableAndCached) {
     TempTree t;
