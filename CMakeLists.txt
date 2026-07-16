@@ -78,10 +78,23 @@ endif()
 add_library(fileshare_v2_core
     src/v2/protocol.cpp
     src/v2/wire.cpp
-    src/v2/vfs.cpp)
+    src/v2/vfs.cpp
+    src/v2/settings.cpp
+    src/v2/session.cpp
+    src/v2/dispatch.cpp
+    src/v2/log.cpp
+    src/v2/server_context.cpp
+    src/v2/server.cpp
+    src/v2/client.cpp)
 target_link_libraries(fileshare_v2_core
     PUBLIC  fileshare_core
     PRIVATE fileshare_warnings fileshare_sanitizers)
+
+# v2 daemon executable (Linux/macOS/Windows: thread-per-connection).
+add_executable(fileshare_daemon_app src/v2/daemon_main.cpp)
+target_link_libraries(fileshare_daemon_app
+    PRIVATE fileshare_v2_core fileshare_warnings fileshare_sanitizers)
+set_target_properties(fileshare_daemon_app PROPERTIES OUTPUT_NAME fileshare-daemon)
 
 # --- Server / client libraries ----------------------------------------------
 # The M1 server is portable (blocking / thread-per-connection). From M4 the
