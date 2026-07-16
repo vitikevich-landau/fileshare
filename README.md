@@ -13,6 +13,42 @@
 
 ---
 
+## 🚀 v2 — «FShare Commander» (сервер-демон + TUI-клиент в стиле Midnight Commander)
+
+Поверх v1 вырос **протокол v2** и полноценная клиент-серверная система (`src/v2/`,
+`include/fileshare/v2/`). Реализованы этапы **M7–M11**:
+
+- **`fileshare-daemon`** — неинтерактивный сервер: раздаёт **дерево директорий**
+  (VFS над share-root, а не плоский список), аутентификация challenge–response
+  (пароль не ходит по сети; SCRAM-подобная, `StoredKey` в `users.json`),
+  **push-события** об изменениях в файлах (inotify → `EVENT_FS`),
+  **живое управление без перезапуска** (лимит скорости и др. применяются на лету),
+  graceful shutdown, SIGHUP-reload.
+- **`fileshare-commander`** — полноэкранный TUI на [FTXUI](https://github.com/ArthurSonzogni/FTXUI):
+  две панели (локальная + удалённая), горячие клавиши как в MC, скачивание с
+  прогрессом/докачкой, **подсветка нового жёлтым**, индикатор связи и
+  авто-реконнект, **админ-панель по F9** (обзор / клиенты+kick / живое
+  редактирование настроек). Плюс `--batch` для скриптов.
+
+```bash
+cmake -S . -B build -G Ninja && cmake --build build     # соберёт и v1, и v2 (+FTXUI через FetchContent)
+./build/fileshare-daemon --share-root ./data/share --port 5555     # сервер (no-auth bootstrap → admin)
+./build/fileshare-daemon --add-user vit --role admin               # завести пользователя (пароль без эха)
+./build/fileshare-commander                                        # TUI: экран входа → командер
+# скриптом:
+./build/fileshare-commander --batch --host 127.0.0.1 --port 5555 --login vit --list /
+```
+
+Флаг `-DFILESHARE_BUILD_TUI=OFF` отключает сборку TUI (например, на headless-сервере).
+~90 тестов v2 (протокол/VFS/crypto/интеграция/события/админ/TUI) — зелёные под
+AddressSanitizer и ThreadSanitizer. Полное ТЗ, архитектура и план — в
+**[docs/v2/](docs/v2/)** (роадмап и статус — [docs/v2/08-roadmap.md](docs/v2/08-roadmap.md)).
+Перспектива (M12–M14): пользователи/квоты, upload, TLS.
+
+Ниже — документация исходной v1 (плоский файлообменник, на котором всё построено).
+
+---
+
 ## Возможности
 
 - **Свой бинарный протокол** поверх голого TCP: framing из 5-байтового заголовка + payload,

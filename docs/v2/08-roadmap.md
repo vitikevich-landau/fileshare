@@ -5,7 +5,31 @@
 так, чтобы TUI появился как можно раньше (это самая видимая часть), но не раньше,
 чем ему будет с чем разговаривать.
 
-## M7 — Протокол v2 + VFS (фундамент)
+> **Статус: M7–M11 реализованы** (v2.0 — то, что было описано в идее). Код в
+> `src/v2/`, `include/fileshare/v2/`, TUI-клиент `fileshare-commander`, демон
+> `fileshare-daemon`. ~90 тестов v2 (протокол, VFS, crypto/auth, интеграция,
+> события, админ, TUI-модель, headless-рендер), зелёные под ASan и TSan.
+> M12–M14 (перспектива) пока не начаты — см. ниже.
+
+## Что уже собирается и работает (v2.0)
+
+| Артефакт | Что делает |
+|---|---|
+| `fileshare-daemon` | демон: `--config/--port/--share-root/--check-config`, `--add-user/--reset-password`, SIGTERM/SIGINT graceful, SIGHUP reload |
+| `fileshare-commander` | TUI в стиле MC (FTXUI) + `--batch` для скриптов |
+| `fileshare_v2_core` | протокол v2, VFS, crypto/auth, сессии, rate limiter, settings hub, inotify-события, сервер |
+
+Сборка: `cmake -S . -B build -G Ninja && cmake --build build` (FTXUI тянется через
+FetchContent; выключается `-DFILESHARE_BUILD_TUI=OFF`).
+
+## M7 — Протокол v2 + VFS (фундамент) ✅
+
+> Реализовано. `fileshare::v2::protocol` (весь набор сообщений), `Vfs` с
+> confined-open через `openat2(RESOLVE_BENEATH)` (защита от TOCTOU-подмены
+> симлинка), `Session`+`MessageDispatcher` (`min_role`), демон на
+> thread-per-connection (epoll-порт — возможная оптимизация позже, ядро
+> `ServerContext` к нему готово). Отличие от плана: транспорт пока
+> поток-на-соединение, а не epoll.
 
 - `protocol_v2.{hpp,cpp}`: HELLO/AUTH_*, LIST_DIR/STAT/CHECKSUM, DOWNLOAD_* c
   transfer_id, ERROR-коды v2. Юнит-тесты round-trip + malformed (образец —
@@ -19,7 +43,13 @@
 - **Готово, когда**: тестовый клиент (простой скриптовый, не TUI) обходит дерево
   и скачивает файл с докачкой через протокол v2; e2e-тест в ctest.
 
-## M8 — Аутентификация и сессии
+## M8 — Аутентификация и сессии ✅
+
+> Реализовано. Отличие от плана: вместо Argon2id/libsodium — самодостаточный
+> **PBKDF2-HMAC-SHA-256** (документированный fallback), чтобы дефолтная сборка
+> (CRC32, без OpenSSL/libsodium) аутентифицировала «из коробки». Схема —
+> SCRAM-подобная: сервер хранит `StoredKey`, кража users.json не даёт войти.
+> Число итераций объявляется в `HELLO_OK` (настройка `auth.pbkdf2_iters`).
 
 - users.json, Argon2id (libsodium; флаг `FILESHARE_USE_SODIUM`), challenge–response,
   бан за перебор, handshake-таймаут, `max_sessions_per_user`.
@@ -29,7 +59,12 @@
 - **Готово, когда**: неаутентифицированное соединение не может получить листинг;
   замер: время входа < 500 мс (Argon2-параметры сбалансированы).
 
-## M9 — TUI-клиент: минимальный командер
+## M9 — TUI-клиент: минимальный командер ✅
+
+> Реализовано. `AppState` (логика, без FTXUI) + `Connection` (сеть на отдельном
+> потоке) + `render_commander` (чистая функция, тестируется headless-рендером в
+> строку). Профили в `~/.config/fileshare/profiles.json` (пароль пока не
+> сохраняется — задел есть). Мультивыделение на Space (Insert в FTXUI v5 нет).
 
 - FTXUI + каркас: ConnectScreen → CommanderScreen; профили подключений
   (пока без сохранения пароля).
@@ -41,7 +76,14 @@
   походить по дереву и скачать файл, не притрагиваясь к мышке и не читая доку
   (руки из MC работают).
 
-## M10 — Живость: события, подсветка, устойчивость
+## M10 — Живость: события, подсветка, устойчивость ✅
+
+> Реализовано. inotify-watcher (рекурсивный, дебаунс) → broadcast `EVENT_FS`
+> подписчикам; клиент разбирает внеполосные `EVENT_*`/`PONG` между ответами и
+> **посреди закачки** (без порчи потока — есть тест). Авто-реконнект с backoff и
+> повторной подпиской, live-перечитка показанной директории, индикатор связи
+> (зелёный/жёлтый/красный), heartbeat. Две гонки, найденные TSan, исправлены.
+> `Ctrl+N` (снять подсветку) — пока не привязан (подсветка живёт на `last_seen`).
 
 - inotify → EventBus → `SUBSCRIBE`/`EVENT_FS`; дебаунс.
 - Подсветка нового (last_seen + live-события), `Ctrl+N`, индикатор соединения,
@@ -52,7 +94,16 @@
   появляется в открытой панели клиента подсвеченным; выдёргивание кабеля
   (kill -9 сервера) приводит к плашке и авто-восстановлению после рестарта.
 
-## M11 — Админ: живое управление сервером
+## M11 — Админ: живое управление сервером ✅
+
+> Реализовано. `SettingsHub` (снапшоты через `atomic<shared_ptr<const Settings>>`),
+> `RateLimiter` (per-client + global token-bucket; для thread-per-connection —
+> throttle со сном, а не epoll-backpressure), `ADMIN_SET` с белым списком и
+> аудитом, персист + `EVENT_CONFIG`, SIGHUP-reload. Админ-панель в TUI (F9):
+> Обзор / Клиенты(kick) / Настройки (правка hot-ключа в модалке). Флагманский
+> тест: снижение лимита реально тормозит **активную** закачку, снятие — ускоряет,
+> без разрыва (проверено под TSan). Вкладка «Журнал» и shutdown-из-UI —
+> частично (события идут в общий лог операций).
 
 - SettingsHub (снапшоты), RateLimiter (per-client + global, событийный
   backpressure), hot-параметры из [03-server-daemon.md](03-server-daemon.md).

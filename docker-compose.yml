@@ -1,19 +1,25 @@
-# Run the epoll file-share server in a Linux container; a Windows/macOS client
-# connects to localhost:5555.
+# Run the v2 fileshare daemon in a Linux container; a client connects to
+# localhost:5555.
 #
-#   docker compose up --build        # start the server
-#   # then, from the host:  fileshare_client  ->  connect 127.0.0.1 5555
+#   docker compose up --build            # start the daemon (v2)
+#   # from the host:  fileshare-commander --host 127.0.0.1 --port 5555 --login <you>
 #
-# Put files to share (and config.json) under ./data. Register them by editing
-# config.json, or start with:  docker compose run --rm fileshare \
-#     --port 5555 --config /data/config.json --add /data/yourfile
+# Layout under ./data (mounted at /data):
+#   data/share/            files/dirs to serve (the whole tree is shared)
+#   data/config.json       daemon config (optional; sensible defaults if absent)
+#   data/users.json        accounts (optional; absent => no-auth bootstrap = admin)
+#   data/checksums.cache    checksum cache (created by the daemon)
+#
+# Add a user (no-echo password prompt):
+#   docker compose run --rm fileshare --config /data/config.json --add-user vit --role admin
 services:
   fileshare:
     build: .
     ports:
       - "5555:5555"
     volumes:
-      - ./data:/data     # shared files + persistent config.json
-    stdin_open: true     # keep the admin console (stdin) attached
-    tty: true
+      - ./data:/data
     restart: unless-stopped
+    # SIGTERM starts a graceful drain of active downloads; give it room before
+    # docker escalates to SIGKILL (must exceed the daemon's drain grace).
+    stop_grace_period: 90s
