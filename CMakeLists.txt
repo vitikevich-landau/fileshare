@@ -72,6 +72,16 @@ if(FILESHARE_USE_SHA256)
     target_link_libraries(fileshare_core PUBLIC OpenSSL::Crypto)
 endif()
 
+# --- v2 core library (protocol v2 + wire transport) -------------------------
+# Self-contained fileshare::v2 module reusing the v1 wire primitives and net
+# shim. Kept in its own library so v1 and its tests stay untouched.
+add_library(fileshare_v2_core
+    src/v2/protocol.cpp
+    src/v2/wire.cpp)
+target_link_libraries(fileshare_v2_core
+    PUBLIC  fileshare_core
+    PRIVATE fileshare_warnings fileshare_sanitizers)
+
 # --- Server / client libraries ----------------------------------------------
 # The M1 server is portable (blocking / thread-per-connection). From M4 the
 # epoll reactor is added Linux-only; the client stays cross-platform.
