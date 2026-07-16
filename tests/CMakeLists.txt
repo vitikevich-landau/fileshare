@@ -25,7 +25,9 @@ add_executable(fileshare_tests
     test_v2_protocol.cpp
     test_v2_vfs.cpp
     test_v2_dispatch.cpp
-    test_v2_integration.cpp)
+    test_v2_crypto.cpp
+    test_v2_integration.cpp
+    test_v2_auth_integration.cpp)
 target_link_libraries(fileshare_tests PRIVATE
     fileshare_core
     fileshare_v2_core

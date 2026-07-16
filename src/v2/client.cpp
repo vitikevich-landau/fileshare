@@ -6,6 +6,7 @@
 
 #include "fileshare/checksum.hpp"
 #include "fileshare/types.hpp"
+#include "fileshare/v2/auth.hpp"
 #include "fileshare/v2/wire.hpp"
 
 namespace fs = std::filesystem;
@@ -39,7 +40,7 @@ Frame Client::request(const std::vector<std::uint8_t>& frame, Msg expect) {
 
 // --- Connect / handshake ----------------------------------------------------
 Client::ConnectResult Client::connect(const std::string& host, std::uint16_t port,
-                                      const std::string& login, const std::string& /*password*/) {
+                                      const std::string& login, const std::string& password) {
     ConnectResult res;
     try {
         sock_ = net::tcp_connect(host, port);
@@ -57,11 +58,13 @@ Client::ConnectResult Client::connect(const std::string& host, std::uint16_t por
             return res;
         }
 
-        // M7: no-auth server ignores the proof; M8 computes it from `password`
-        // and ok.challenge.
         AuthRequest areq;
         areq.login = login;
-        // proof stays zero-filled in M7.
+        if (ok.auth_mode == AUTH_MODE_CHALLENGE) {
+            // Challenge-response: derive the proof from the password without
+            // sending it. No-auth mode leaves the proof zero-filled.
+            areq.proof = compute_client_proof(password, login, ok.challenge, ok.pbkdf2_iters);
+        }
         send_frame(sock_, encode_auth_request(areq));
 
         std::optional<Frame> af = recv_frame(sock_);

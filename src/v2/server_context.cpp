@@ -14,6 +14,31 @@ ServerContext::ServerContext(Settings settings, std::string config_path)
     if (!settings_.checksum_cache_file.empty()) {
         vfs_->load_cache(fs::path(settings_.checksum_cache_file));
     }
+    if (!settings_.users_file.empty()) {
+        users_ = UserDb::load(settings_.users_file);
+        if (!users_.empty()) {
+            log_info(std::to_string(users_.size()) + " user(s) loaded; challenge auth enabled");
+        } else {
+            log_warn("no users configured -- running in no-auth bootstrap mode (grants admin)");
+        }
+    }
+}
+
+bool ServerContext::auth_required() const {
+    std::lock_guard<std::mutex> lk(users_mutex_);
+    return !users_.empty();
+}
+
+std::optional<User> ServerContext::find_user(const std::string& login) const {
+    std::lock_guard<std::mutex> lk(users_mutex_);
+    return users_.find(login);
+}
+
+void ServerContext::reload_users() {
+    if (settings_.users_file.empty()) return;
+    UserDb fresh = UserDb::load(settings_.users_file);
+    std::lock_guard<std::mutex> lk(users_mutex_);
+    users_ = std::move(fresh);
 }
 
 std::uint64_t ServerContext::uptime_seconds() const {

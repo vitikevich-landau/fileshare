@@ -29,6 +29,7 @@ struct Settings {
     bool          events_enabled      = true;   // hot
     std::uint32_t events_debounce_ms  = 500;    // hot
     std::string   users_file          = "users.json";       // restart (path)
+    std::uint32_t auth_pbkdf2_iters   = 200000;              // restart (must match stored users)
     std::string   log_level           = "info"; // hot
 
     // Load from a JSON file. A missing file yields defaults (not an error, so a

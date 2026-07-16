@@ -54,7 +54,7 @@ json to_json(const Settings& s) {
         }},
         {"checksum", {{"cache_file", s.checksum_cache_file}}},
         {"events", {{"enabled", s.events_enabled}, {"debounce_ms", s.events_debounce_ms}}},
-        {"auth", {{"users_file", s.users_file}}},
+        {"auth", {{"users_file", s.users_file}, {"pbkdf2_iters", s.auth_pbkdf2_iters}}},
         {"log", {{"level", s.log_level}}},
     };
 }
@@ -92,7 +92,8 @@ Settings Settings::load(const std::string& path) {
     s.events_debounce_ms = get_or<std::uint32_t>(ev, "debounce_ms", s.events_debounce_ms);
 
     const json au = j.value("auth", json::object());
-    s.users_file = get_or<std::string>(au, "users_file", s.users_file);
+    s.users_file        = get_or<std::string>(au, "users_file", s.users_file);
+    s.auth_pbkdf2_iters = get_or<std::uint32_t>(au, "pbkdf2_iters", s.auth_pbkdf2_iters);
 
     const json lg = j.value("log", json::object());
     s.log_level = get_or<std::string>(lg, "level", s.log_level);

@@ -36,6 +36,7 @@ TEST(V2Protocol, HelloOkRoundTrip) {
     HelloOk h;
     h.server_name = "fileshare-daemon";
     h.auth_mode = AUTH_MODE_CHALLENGE;
+    h.pbkdf2_iters = 200000;
     for (std::size_t i = 0; i < CHALLENGE_LEN; ++i) h.challenge[i] = static_cast<std::uint8_t>(i);
     const Frame f = roundtrip(encode_hello_ok(h));
     ASSERT_EQ(f.type, Msg::HELLO_OK);
@@ -43,6 +44,7 @@ TEST(V2Protocol, HelloOkRoundTrip) {
     EXPECT_EQ(out.server_name, "fileshare-daemon");
     EXPECT_EQ(out.auth_mode, AUTH_MODE_CHALLENGE);
     EXPECT_EQ(out.challenge, h.challenge);
+    EXPECT_EQ(out.pbkdf2_iters, 200000u);
 }
 
 TEST(V2Protocol, AuthRequestRoundTrip) {

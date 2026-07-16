@@ -79,6 +79,8 @@ add_library(fileshare_v2_core
     src/v2/protocol.cpp
     src/v2/wire.cpp
     src/v2/vfs.cpp
+    src/v2/crypto.cpp
+    src/v2/auth.cpp
     src/v2/settings.cpp
     src/v2/session.cpp
     src/v2/dispatch.cpp

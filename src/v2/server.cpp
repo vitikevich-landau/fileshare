@@ -7,6 +7,8 @@
 #include <vector>
 
 #include "fileshare/types.hpp"
+#include "fileshare/v2/auth.hpp"
+#include "fileshare/v2/crypto.hpp"
 #include "fileshare/v2/dispatch.hpp"
 #include "fileshare/v2/log.hpp"
 #include "fileshare/v2/vfs.hpp"
@@ -209,6 +211,12 @@ void dispatch(net::Socket& sock, ServerContext& ctx, Session& session, const Fra
 bool do_handshake(net::Socket& sock, ServerContext& ctx, Session& session) {
     const int hs_ms = static_cast<int>(ctx.settings().limits.handshake_timeout_s) * 1000;
 
+    // Reject a banned IP before doing any work.
+    if (ctx.auth_guard().banned(session.ip(), std::chrono::steady_clock::now())) {
+        send_error(sock, ErrCode::RATE_LIMITED, "too many failed attempts; try again later");
+        return false;
+    }
+
     // 1. HELLO
     if (!net::wait_readable(sock, hs_ms)) {
         log_debug("session " + std::to_string(session.id()) + " handshake timeout (no HELLO)");
@@ -233,10 +241,19 @@ bool do_handshake(net::Socket& sock, ServerContext& ctx, Session& session) {
         return false;
     }
 
-    // 2. HELLO_OK (M7: no-auth bootstrap; real challenge/users arrive in M8)
+    // 2. HELLO_OK -- advertise auth mode + challenge.
+    const bool need_auth = ctx.auth_required();
+    Challenge challenge{};
     HelloOk ok;
     ok.server_name = "fileshare-daemon";
-    ok.auth_mode = AUTH_MODE_NONE;
+    if (need_auth) {
+        crypto::random_bytes(challenge.data(), challenge.size());
+        ok.auth_mode = AUTH_MODE_CHALLENGE;
+        ok.challenge = challenge;
+        ok.pbkdf2_iters = ctx.pbkdf2_iters();
+    } else {
+        ok.auth_mode = AUTH_MODE_NONE;
+    }
     send(sock, encode_hello_ok(ok));
 
     // 3. AUTH_REQUEST
@@ -258,19 +275,48 @@ bool do_handshake(net::Socket& sock, ServerContext& ctx, Session& session) {
     }
     const AuthRequest areq = parse_auth_request(auth_fr->payload.data(), auth_fr->payload.size());
 
-    // No-auth mode: accept anyone, grant ADMIN so a fresh deployment is fully
-    // usable before users are configured. M8 replaces this with a real lookup.
-    const std::string login = areq.login.empty() ? "anonymous" : areq.login;
-    const Role role = Role::ADMIN;
-    session.authenticate(login, role);
+    std::string login;
+    Role role = Role::USER;
+    if (!need_auth) {
+        // No-auth bootstrap: accept anyone, grant ADMIN so a fresh deployment is
+        // usable before users are configured.
+        login = areq.login.empty() ? "anonymous" : areq.login;
+        role = Role::ADMIN;
+    } else {
+        const auto now = std::chrono::steady_clock::now();
+        const std::optional<User> user = ctx.find_user(areq.login);
+        const bool ok_auth =
+            user.has_value() &&
+            verify_client_proof(*user, challenge, areq.proof, ctx.pbkdf2_iters());
+        if (!ok_auth) {
+            ctx.auth_guard().fail(session.ip(), now, ctx.settings().limits.auth_fail_ban_s);
+            // Slow down online guessing a touch (thread-per-connection: only this
+            // attacker's thread pays).
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            send(sock, encode_auth_fail(AuthFail{7, "invalid login or password"}));
+            log_warn("auth failed for '" + areq.login + "' from " + session.ip());
+            return false;
+        }
+        // Enforce max concurrent sessions per user.
+        const std::uint32_t max_sess = ctx.settings().limits.max_sessions_per_user;
+        if (max_sess != 0 && ctx.sessions().sessions_for_login(user->login) >= max_sess) {
+            send(sock, encode_auth_fail(AuthFail{8, "too many concurrent sessions"}));
+            log_warn("session cap reached for '" + user->login + "'");
+            return false;
+        }
+        ctx.auth_guard().succeed(session.ip());
+        login = user->login;
+        role = user->role;
+    }
 
+    session.authenticate(login, role);
     AuthOk aok;
     aok.role = role;
     aok.session_id = session.id();
     aok.motd = ctx.settings().motd;
     send(sock, encode_auth_ok(aok));
     log_info("session " + std::to_string(session.id()) + " authed as '" + login +
-             "' from " + session.ip());
+             "' (" + role_to_string(role) + ") from " + session.ip());
     return true;
 }
 

@@ -202,6 +202,7 @@ std::vector<std::uint8_t> encode_hello_ok(const HelloOk& h) {
     write_str(p, h.server_name, MAX_NAME_LEN);
     write_u8(p, h.auth_mode);
     p.insert(p.end(), h.challenge.begin(), h.challenge.end());
+    write_u32be(p, h.pbkdf2_iters);
     return make_frame(Msg::HELLO_OK, p);
 }
 
@@ -455,6 +456,7 @@ HelloOk parse_hello_ok(const std::uint8_t* p, std::size_t n) {
     h.server_name = read_str(r, MAX_NAME_LEN);
     h.auth_mode   = r.u8();
     r.read_into(h.challenge.data(), h.challenge.size());
+    h.pbkdf2_iters = r.u32be();
     require_end(r, "HELLO_OK");
     return h;
 }

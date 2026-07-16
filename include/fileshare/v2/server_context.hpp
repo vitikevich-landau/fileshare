@@ -10,8 +10,11 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 
+#include "fileshare/v2/auth.hpp"
 #include "fileshare/v2/protocol.hpp"
 #include "fileshare/v2/session.hpp"
 #include "fileshare/v2/settings.hpp"
@@ -31,6 +34,15 @@ public:
     [[nodiscard]] const Settings&  settings() const noexcept { return settings_; }
     [[nodiscard]] SessionRegistry& sessions() noexcept { return sessions_; }
     [[nodiscard]] const std::string& config_path() const noexcept { return config_path_; }
+
+    // --- Authentication -----------------------------------------------------
+    // True if any users are configured (=> challenge auth required; otherwise a
+    // fresh deployment runs in no-auth bootstrap mode granting admin).
+    [[nodiscard]] bool auth_required() const;
+    [[nodiscard]] std::optional<User> find_user(const std::string& login) const;
+    void reload_users();
+    [[nodiscard]] AuthGuard& auth_guard() noexcept { return auth_guard_; }
+    [[nodiscard]] std::uint32_t pbkdf2_iters() const noexcept { return settings_.auth_pbkdf2_iters; }
 
     // --- Lifecycle ----------------------------------------------------------
     void mark_started() noexcept {
@@ -60,6 +72,10 @@ private:
     std::string           config_path_;
     std::unique_ptr<Vfs>  vfs_;
     SessionRegistry       sessions_;
+
+    mutable std::mutex    users_mutex_;
+    UserDb                users_;
+    AuthGuard             auth_guard_;
 
     std::atomic<std::uint64_t> bytes_sent_{0};
     std::atomic<std::uint64_t> completed_{0};

@@ -125,7 +125,8 @@ inline constexpr std::uint8_t ENTRY_FLAG_NEW = 1u << 0;
 // --- Message payload structs ------------------------------------------------
 struct Hello        { std::uint16_t proto_ver = PROTO_VERSION; std::string client_name; };
 struct HelloOk      { std::uint16_t proto_ver = PROTO_VERSION; std::string server_name;
-                      std::uint8_t auth_mode = AUTH_MODE_NONE; Challenge challenge{}; };
+                      std::uint8_t auth_mode = AUTH_MODE_NONE; Challenge challenge{};
+                      std::uint32_t pbkdf2_iters = 0; };  // KDF cost for challenge mode
 struct AuthRequest  { std::string login; Proof proof{}; };
 struct AuthOk       { Role role = Role::USER; std::uint64_t session_id = 0; std::string motd; };
 struct AuthFail     { std::uint16_t reason = 0; std::string message; };
