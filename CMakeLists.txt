@@ -77,7 +77,8 @@ endif()
 # shim. Kept in its own library so v1 and its tests stay untouched.
 add_library(fileshare_v2_core
     src/v2/protocol.cpp
-    src/v2/wire.cpp)
+    src/v2/wire.cpp
+    src/v2/vfs.cpp)
 target_link_libraries(fileshare_v2_core
     PUBLIC  fileshare_core
     PRIVATE fileshare_warnings fileshare_sanitizers)

@@ -22,7 +22,8 @@ add_executable(fileshare_tests
     test_resume.cpp
     test_epoll.cpp
     test_coro.cpp
-    test_v2_protocol.cpp)
+    test_v2_protocol.cpp
+    test_v2_vfs.cpp)
 target_link_libraries(fileshare_tests PRIVATE
     fileshare_core
     fileshare_v2_core
