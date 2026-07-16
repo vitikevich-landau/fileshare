@@ -198,7 +198,7 @@ void run_session(Client& client, const std::string& login, const std::string& ho
         [&client, host, port, login, password] {
             return client.connect(host, port, login, password).ok;
         });
-    conn.set_subscription(SUB_FS | SUB_NOTICE);
+    conn.set_subscription(SUB_FS | SUB_NOTICE | (admin ? SUB_CONFIG : 0u));
     conn.start();
 
     // Initial remote listing (SUBSCRIBE is armed by the worker thread).
@@ -212,7 +212,8 @@ void run_session(Client& client, const std::string& login, const std::string& ho
 
     auto renderer = Renderer([&] {
         drain();
-        return render_commander(app, admin, make_prompt(login, host, app));
+        return app.admin_open() ? render_admin(app)
+                                : render_commander(app, admin, make_prompt(login, host, app));
     });
 
     auto refresh_active = [&] {
@@ -221,8 +222,68 @@ void run_session(Client& client, const std::string& login, const std::string& ho
                                           conn.submit(CmdListDir{app.active_index(), p.path}); }
         else { app.load_local(app.active_index(), p.path); }
     };
+    auto refresh_admin = [&] {
+        switch (app.admin_tab()) {
+            case AdminTab::OVERVIEW: conn.submit(CmdAdminStats{}); break;
+            case AdminTab::CLIENTS:  conn.submit(CmdAdminClients{}); break;
+            case AdminTab::SETTINGS: conn.submit(CmdAdminGetConfig{}); break;
+        }
+    };
+    auto open_admin_tab = [&](AdminTab t) { app.admin_set_tab(t); refresh_admin(); };
 
-    auto component = CatchEvent(renderer, [&](Event e) -> bool {
+    // Settings-edit modal (shown while `editing`).
+    std::string edit_key, edit_value;
+    bool editing = false;
+    auto edit_input = Input(&edit_value, "new value");
+    auto submit_edit = [&] {
+        if (!edit_key.empty()) conn.submit(CmdAdminSet{edit_key, edit_value});
+        editing = false;
+    };
+    auto edit_dialog = Container::Vertical({
+        edit_input,
+        Container::Horizontal({Button("Set", submit_edit), Button("Cancel", [&] { editing = false; })}),
+    });
+    auto edit_modal = Renderer(edit_dialog, [&] {
+        return vbox({
+            text("Set " + edit_key) | bold,
+            separator(),
+            hbox({text("value: "), edit_input->Render() | flex}),
+            separator(),
+            hbox({edit_dialog->ChildAt(1)->Render()}) | hcenter,
+        }) | border | bgcolor(Color::Black) | size(WIDTH, GREATER_THAN, 44);
+    });
+
+    auto keys = CatchEvent(renderer, [&](Event e) -> bool {
+        // --- Admin panel mode ---
+        if (app.admin_open()) {
+            if (e == Event::F9 || e == Event::Escape) { app.close_admin(); return true; }
+            if (e == Event::Character("1")) { open_admin_tab(AdminTab::OVERVIEW); return true; }
+            if (e == Event::Character("2")) { open_admin_tab(AdminTab::CLIENTS); return true; }
+            if (e == Event::Character("3")) { open_admin_tab(AdminTab::SETTINGS); return true; }
+            if (e == Event::Tab) {
+                open_admin_tab(static_cast<AdminTab>((static_cast<int>(app.admin_tab()) + 1) % 3));
+                return true;
+            }
+            if (e == Event::ArrowUp)   { app.admin_move(-1); return true; }
+            if (e == Event::ArrowDown) { app.admin_move(1); return true; }
+            if (e == Event::Character("\x12")) { refresh_admin(); return true; }  // Ctrl+R
+            if (app.admin_tab() == AdminTab::CLIENTS &&
+                (e == Event::F8 || e == Event::Character("k"))) {
+                if (auto id = app.admin_selected_client()) conn.submit(CmdAdminKick{id});
+                return true;
+            }
+            if (app.admin_tab() == AdminTab::SETTINGS && e == Event::Return) {
+                if (auto sel = app.admin_selected_setting(); sel && sel->second) {
+                    edit_key = sel->first;
+                    edit_value.clear();
+                    editing = true;
+                }
+                return true;
+            }
+            return true;   // swallow other keys while the panel is open
+        }
+
+        // --- Commander mode ---
         if (e == Event::Tab || e == Event::TabReverse) { app.toggle_active(); return true; }
         if (e == Event::ArrowUp)   { app.move_cursor(-1); return true; }
         if (e == Event::ArrowDown) { app.move_cursor(1); return true; }
@@ -239,13 +300,22 @@ void run_session(Client& client, const std::string& login, const std::string& ho
             if (auto cmd = app.make_download()) conn.submit(*cmd);
             return true;
         }
+        if (e == Event::F9 && admin) {   // open the admin panel
+            app.open_admin();
+            conn.submit(CmdAdminStats{});
+            conn.submit(CmdAdminGetConfig{});
+            conn.submit(CmdAdminClients{});
+            return true;
+        }
         if (e == Event::Character("*")) { app.invert_marks(); return true; }
         if (e == Event::Character("\x12")) { refresh_active(); return true; }  // Ctrl+R
         if (e == Event::F10 || e == Event::Escape) { screen.Exit(); return true; }
         return false;
     });
 
-    screen.Loop(component);
+    // The edit modal overlays the main UI while `editing`.
+    auto root = Modal(keys, edit_modal, &editing);
+    screen.Loop(root);
     conn.stop();
 
     // Remember when we last saw the remote root, for the "new" highlight.

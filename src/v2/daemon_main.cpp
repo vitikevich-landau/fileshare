@@ -35,10 +35,12 @@ namespace {
 std::atomic<v2::ServerContext*> g_ctx{nullptr};
 
 void on_signal(int sig) {
+    auto* ctx = g_ctx.load();
     if (sig == SIGHUP) {
-        return;   // reload hook (M11); ignore for now so it doesn't kill us
+        if (ctx) ctx->request_reload();   // atomic flag; serve loop re-reads config
+        return;
     }
-    if (auto* ctx = g_ctx.load()) {
+    if (ctx) {
         ctx->request_stop();   // single atomic store: safe from a handler
     }
 }

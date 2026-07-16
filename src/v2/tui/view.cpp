@@ -117,6 +117,110 @@ Element render_panel(const Panel& p, bool active, Link link) {
     return box | flex;
 }
 
+namespace {
+std::string human_uptime(std::uint64_t secs) {
+    const std::uint64_t d = secs / 86400, h = (secs % 86400) / 3600, m = (secs % 3600) / 60;
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), "%llud %02lluh %02llum",
+                  static_cast<unsigned long long>(d), static_cast<unsigned long long>(h),
+                  static_cast<unsigned long long>(m));
+    return buf;
+}
+std::string bps_str(std::uint64_t bps) {
+    return bps == 0 ? std::string("unlimited") : human_size(bps) + "/s";
+}
+Element kv(const std::string& k, const std::string& v) {
+    return hbox({text(k) | color(Color::GrayLight) | size(WIDTH, EQUAL, 22),
+                 text(v) | color(Color::White) | ftxui::bold});
+}
+} // namespace
+
+Element render_admin(const AppState& app) {
+    const AdminView& a = app.admin();
+
+    auto tab_label = [&](AdminTab t, const char* n, const char* label) {
+        const bool on = a.tab == t;
+        return hbox({text(n) | color(Color::Black) | bgcolor(on ? Color::Cyan : Color::GrayDark),
+                     text(std::string(label) + " ")
+                         | (on ? (color(Color::White) | ftxui::bold) : color(Color::GrayLight))
+                         | bgcolor(on ? Color::Blue : Color::Black)});
+    };
+    Element tabs = hbox({tab_label(AdminTab::OVERVIEW, "1", "Overview"),
+                         tab_label(AdminTab::CLIENTS, "2", "Clients"),
+                         tab_label(AdminTab::SETTINGS, "3", "Settings")});
+
+    Element body;
+    if (a.tab == AdminTab::OVERVIEW) {
+        const AdminStats& s = a.stats;
+        body = vbox({
+            kv("Version", s.version + " (proto 2)"),
+            kv("Uptime", human_uptime(s.uptime_seconds)),
+            kv("Connections", std::to_string(s.active_connections)),
+            kv("Active downloads", std::to_string(s.active_downloads)),
+            kv("Bytes sent", human_size(s.bytes_sent)),
+            kv("Completed downloads", std::to_string(s.completed_downloads)),
+            kv("Per-client limit", bps_str(s.per_client_bps)),
+            kv("Global limit", bps_str(s.global_bps)),
+        });
+    } else if (a.tab == AdminTab::CLIENTS) {
+        Elements rows;
+        rows.push_back(hbox({text("id") | size(WIDTH, EQUAL, 5),
+                             text("login") | size(WIDTH, EQUAL, 12),
+                             text("ip") | size(WIDTH, EQUAL, 18),
+                             text("role") | size(WIDTH, EQUAL, 7),
+                             text("doing")}) | color(Color::GrayLight));
+        for (std::size_t i = 0; i < a.clients.size(); ++i) {
+            const auto& c = a.clients[i];
+            std::string doing = c.current_path.empty() ? "(idle)" : ("get " + c.current_path);
+            Element row = hbox({
+                text(std::to_string(c.session_id)) | size(WIDTH, EQUAL, 5),
+                text(c.login) | size(WIDTH, EQUAL, 12),
+                text(c.ip) | size(WIDTH, EQUAL, 18),
+                text(c.role == Role::ADMIN ? "admin" : "user") | size(WIDTH, EQUAL, 7),
+                text(doing),
+            });
+            if (i == a.cursor) row = row | inverted | focus;
+            rows.push_back(row);
+        }
+        if (a.clients.empty()) rows.push_back(text("(no clients)") | dim);
+        body = vbox(std::move(rows)) | frame | flex;
+    } else {  // SETTINGS
+        Elements rows;
+        for (std::size_t i = 0; i < a.settings.size(); ++i) {
+            const auto& [key, val, hot] = a.settings[i];
+            Element row = hbox({
+                text(key) | size(WIDTH, EQUAL, 28) | color(hot ? Color::White : Color::GrayDark),
+                text(val) | size(WIDTH, EQUAL, 18) | ftxui::bold,
+                text(hot ? "[hot]" : "[restart]") | color(hot ? Color::Green : Color::GrayDark),
+            });
+            if (i == a.cursor) row = row | inverted | focus;
+            rows.push_back(row);
+        }
+        body = vbox(std::move(rows)) | frame | flex;
+    }
+
+    // Context F-bar.
+    auto key = [](const char* n, const char* label) {
+        return hbox({text(n) | color(Color::Black) | bgcolor(Color::Cyan),
+                     text(label) | color(Color::White) | bgcolor(Color::Blue)});
+    };
+    Elements fkeys;
+    if (a.tab == AdminTab::CLIENTS)  fkeys.push_back(key("8", "Kick "));
+    if (a.tab == AdminTab::SETTINGS) fkeys.push_back(key("↵", "Edit "));
+    fkeys.push_back(key("R", "Refresh "));
+    fkeys.push_back(key("9", "Back "));
+    Element fbar = hbox(std::move(fkeys));
+
+    return vbox({
+        hbox({text(" ADMIN ") | bgcolor(Color::Red) | color(Color::White) | ftxui::bold,
+              text(" "), tabs}),
+        separator(),
+        body | flex,
+        separator(),
+        fbar,
+    }) | border;
+}
+
 Element render_commander(const AppState& app, bool admin, const std::string& prompt) {
     const int a = app.active_index();
     Element panels = hbox({

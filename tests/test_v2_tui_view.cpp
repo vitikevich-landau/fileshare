@@ -10,6 +10,9 @@
 
 using namespace fileshare::v2::tui;
 using namespace ftxui;
+using fileshare::v2::AdminStats;
+using fileshare::v2::AdminClientInfo;
+using fileshare::v2::Role;
 
 namespace {
 
@@ -88,4 +91,63 @@ TEST(TuiView, EmptyStateDoesNotCrash) {
     AppState app;   // both panels empty
     const std::string s = to_string(render_commander(app, false, "$ "));
     EXPECT_FALSE(s.empty());
+}
+
+// --- Admin panel ------------------------------------------------------------
+TEST(TuiAdminView, OverviewShowsStats) {
+    AppState app;
+    app.open_admin();
+    app.admin_set_tab(AdminTab::OVERVIEW);
+    AdminStats st;
+    st.version = "2.0.0";
+    st.active_connections = 3;
+    st.per_client_bps = 10485760;
+    st.global_bps = 0;
+    app.apply(ResAdminStats{st});
+    const std::string s = to_string(render_admin(app));
+    EXPECT_NE(s.find("ADMIN"), std::string::npos);
+    EXPECT_NE(s.find("Overview"), std::string::npos);
+    EXPECT_NE(s.find("2.0.0"), std::string::npos);
+    EXPECT_NE(s.find("unlimited"), std::string::npos);   // global limit 0
+}
+
+TEST(TuiAdminView, ClientsTabListsAndKickHint) {
+    AppState app;
+    app.open_admin();
+    app.admin_set_tab(AdminTab::CLIENTS);
+    AdminClientInfo c{7, "vit", "1.2.3.4", Role::ADMIN, "/big.iso", 100, 0};
+    app.apply(ResAdminClients{{c}});
+    const std::string s = to_string(render_admin(app));
+    EXPECT_NE(s.find("vit"), std::string::npos);
+    EXPECT_NE(s.find("1.2.3.4"), std::string::npos);
+    EXPECT_NE(s.find("Kick"), std::string::npos);
+}
+
+TEST(TuiAdminView, SettingsTabParsesConfig) {
+    AppState app;
+    app.open_admin();
+    app.admin_set_tab(AdminTab::SETTINGS);
+    const std::string cfg = R"({"limits":{"per_client_bps":12345},"server":{"port":5555,"motd":"hi"},
+                                 "log":{"level":"info"},"events":{"debounce_ms":500}})";
+    app.apply(ResAdminConfig{cfg});
+    const std::string s = to_string(render_admin(app));
+    EXPECT_NE(s.find("limits.per_client_bps"), std::string::npos);
+    EXPECT_NE(s.find("12345"), std::string::npos);
+    EXPECT_NE(s.find("[hot]"), std::string::npos);
+    EXPECT_NE(s.find("[restart]"), std::string::npos);   // server.port is restart-only
+}
+
+TEST(TuiAdminModel, SettingsSelectionRespectsHotFlag) {
+    AppState app;
+    app.open_admin();
+    app.admin_set_tab(AdminTab::SETTINGS);
+    app.apply(ResAdminConfig{R"({"server":{"port":5555}})"});
+    // find the server.port row and select it -> should be flagged restart (not hot)
+    for (std::size_t i = 0; i < app.admin().settings.size(); ++i) {
+        if (std::get<0>(app.admin().settings[i]) == "server.port") { app.admin_move(static_cast<int>(i)); break; }
+    }
+    auto sel = app.admin_selected_setting();
+    ASSERT_TRUE(sel.has_value());
+    EXPECT_EQ(sel->first, "server.port");
+    EXPECT_FALSE(sel->second);   // not hot -> the UI refuses to edit it
 }

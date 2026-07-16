@@ -9,8 +9,11 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
+
+#include "fileshare/v2/protocol.hpp"   // AdminStats, AdminClientInfo
 
 namespace fileshare::v2::tui {
 
@@ -58,9 +61,15 @@ struct LogLine { LogLevel level; std::string text; };
 enum class Link { CONNECTED, RECONNECTING, DOWN };
 
 // --- Commands (UI -> worker) and Results (worker -> UI) ---------------------
-struct CmdListDir  { int panel; std::string path; };
-struct CmdDownload { std::string remote; std::string local; std::string display; };
-using Command = std::variant<CmdListDir, CmdDownload>;
+struct CmdListDir       { int panel; std::string path; };
+struct CmdDownload      { std::string remote; std::string local; std::string display; };
+struct CmdAdminStats    {};
+struct CmdAdminClients  {};
+struct CmdAdminKick     { std::uint64_t session_id; };
+struct CmdAdminSet      { std::string key; std::string value; };
+struct CmdAdminGetConfig{};
+using Command = std::variant<CmdListDir, CmdDownload, CmdAdminStats, CmdAdminClients,
+                             CmdAdminKick, CmdAdminSet, CmdAdminGetConfig>;
 
 struct ResListing  { int panel; std::string path; std::vector<PanelEntry> entries; };
 struct ResError    { std::string message; };
@@ -71,8 +80,26 @@ struct ResDownloadDone { bool ok; bool checksum_ok; std::string display; std::st
 struct ResDisconnected { std::string reason; };
 struct ResReconnected  {};                 // link restored after auto-reconnect
 struct ResLink         { Link link; };     // link-status transition (e.g. reconnecting)
+struct ResAdminStats   { AdminStats stats; };
+struct ResAdminClients { std::vector<AdminClientInfo> clients; };
+struct ResAdminSetResult { bool ok; std::string message; };
+struct ResAdminConfig  { std::string json; };
 using Result = std::variant<ResListing, ResError, ResInfo, ResProgress,
-                            ResDownloadDone, ResDisconnected, ResReconnected, ResLink>;
+                            ResDownloadDone, ResDisconnected, ResReconnected, ResLink,
+                            ResAdminStats, ResAdminClients, ResAdminSetResult, ResAdminConfig>;
+
+// --- Admin panel state ------------------------------------------------------
+enum class AdminTab { OVERVIEW = 0, CLIENTS = 1, SETTINGS = 2 };
+
+struct AdminView {
+    bool        open = false;
+    AdminTab    tab = AdminTab::OVERVIEW;
+    AdminStats  stats;
+    std::vector<AdminClientInfo> clients;
+    std::size_t cursor = 0;   // row cursor for the Clients / Settings tabs
+    // Settings rows: (key, value, hot?) parsed from ADMIN_CONFIG.
+    std::vector<std::tuple<std::string, std::string, bool>> settings;
+};
 
 // The whole UI state. Owned and mutated only on the UI thread.
 class AppState {
@@ -116,6 +143,19 @@ public:
     void set_link(Link l) { link_ = l; }
     [[nodiscard]] Link link() const { return link_; }
 
+    // --- Admin panel --------------------------------------------------------
+    [[nodiscard]] bool admin_open() const { return admin_.open; }
+    void open_admin()  { admin_.open = true; }
+    void close_admin() { admin_.open = false; }
+    [[nodiscard]] AdminTab admin_tab() const { return admin_.tab; }
+    void admin_set_tab(AdminTab t) { admin_.tab = t; admin_.cursor = 0; }
+    void admin_move(int delta);                     // move cursor in the active tab list
+    [[nodiscard]] const AdminView& admin() const { return admin_; }
+    // The currently-selected client's session id (0 if none).
+    [[nodiscard]] std::uint64_t admin_selected_client() const;
+    // The currently-selected settings row (key + hot flag), or nullopt.
+    [[nodiscard]] std::optional<std::pair<std::string, bool>> admin_selected_setting() const;
+
     // Apply any Result from the worker (dispatches to the methods above).
     void apply(const Result& r);
 
@@ -135,6 +175,7 @@ private:
     std::deque<LogLine> log_;
     std::optional<ResProgress> progress_;
     Link  link_ = Link::CONNECTED;
+    AdminView admin_;
     static constexpr std::size_t kMaxLog = 500;
 };
 

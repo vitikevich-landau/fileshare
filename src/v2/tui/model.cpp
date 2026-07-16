@@ -9,6 +9,8 @@
 #include <filesystem>
 #include <system_error>
 
+#include <nlohmann/json.hpp>
+
 namespace fs = std::filesystem;
 
 namespace fileshare::v2::tui {
@@ -272,10 +274,83 @@ std::optional<Command> AppState::make_download() {
     return CmdDownload{remote, local, e->name};
 }
 
+// --- Admin panel ------------------------------------------------------------
+void AppState::admin_move(int delta) {
+    std::size_t n = (admin_.tab == AdminTab::CLIENTS) ? admin_.clients.size()
+                  : (admin_.tab == AdminTab::SETTINGS) ? admin_.settings.size() : 0;
+    if (n == 0) { admin_.cursor = 0; return; }
+    long c = static_cast<long>(admin_.cursor) + delta;
+    if (c < 0) c = 0;
+    if (c >= static_cast<long>(n)) c = static_cast<long>(n) - 1;
+    admin_.cursor = static_cast<std::size_t>(c);
+}
+
+std::uint64_t AppState::admin_selected_client() const {
+    if (admin_.cursor < admin_.clients.size()) return admin_.clients[admin_.cursor].session_id;
+    return 0;
+}
+
+std::optional<std::pair<std::string, bool>> AppState::admin_selected_setting() const {
+    if (admin_.cursor < admin_.settings.size()) {
+        const auto& s = admin_.settings[admin_.cursor];
+        return std::make_pair(std::get<0>(s), std::get<2>(s));
+    }
+    return std::nullopt;
+}
+
+namespace {
+// The keys the admin panel shows, with their JSON location and hot/restart flag.
+struct SettingKey { const char* key; const char* group; const char* leaf; bool hot; };
+const SettingKey kSettingKeys[] = {
+    {"limits.per_client_bps",       "limits", "per_client_bps",       true},
+    {"limits.global_bps",           "limits", "global_bps",           true},
+    {"limits.max_connections",      "limits", "max_connections",      true},
+    {"limits.max_sessions_per_user","limits", "max_sessions_per_user",true},
+    {"limits.idle_timeout_s",       "limits", "idle_timeout_s",       true},
+    {"limits.handshake_timeout_s",  "limits", "handshake_timeout_s",  true},
+    {"limits.auth_fail_ban_s",      "limits", "auth_fail_ban_s",      true},
+    {"server.motd",                 "server", "motd",                 true},
+    {"log.level",                   "log",    "level",                true},
+    {"events.debounce_ms",          "events", "debounce_ms",          true},
+    {"server.port",                 "server", "port",                 false},
+    {"server.share_root",           "server", "share_root",           false},
+};
+
+std::string json_value_str(const nlohmann::json& v) {
+    if (v.is_string()) return v.get<std::string>();
+    if (v.is_number_unsigned()) return std::to_string(v.get<std::uint64_t>());
+    if (v.is_number_integer()) return std::to_string(v.get<std::int64_t>());
+    if (v.is_boolean()) return v.get<bool>() ? "true" : "false";
+    return v.dump();
+}
+} // namespace
+
 void AppState::apply(const Result& r) {
     std::visit([this](const auto& res) {
         using T = std::decay_t<decltype(res)>;
-        if constexpr (std::is_same_v<T, ResListing>) {
+        if constexpr (std::is_same_v<T, ResAdminStats>) {
+            admin_.stats = res.stats;
+        } else if constexpr (std::is_same_v<T, ResAdminClients>) {
+            admin_.clients = res.clients;
+            if (admin_.cursor >= admin_.clients.size())
+                admin_.cursor = admin_.clients.empty() ? 0 : admin_.clients.size() - 1;
+        } else if constexpr (std::is_same_v<T, ResAdminSetResult>) {
+            log(res.ok ? LogLevel::GOOD : LogLevel::ERROR,
+                (res.ok ? "config: " : "config rejected: ") + res.message);
+        } else if constexpr (std::is_same_v<T, ResAdminConfig>) {
+            admin_.settings.clear();
+            try {
+                const auto j = nlohmann::json::parse(res.json);
+                for (const auto& sk : kSettingKeys) {
+                    std::string val;
+                    if (j.contains(sk.group) && j[sk.group].contains(sk.leaf))
+                        val = json_value_str(j[sk.group][sk.leaf]);
+                    admin_.settings.emplace_back(sk.key, val, sk.hot);
+                }
+            } catch (const std::exception&) {
+                log(LogLevel::ERROR, "could not parse server config");
+            }
+        } else if constexpr (std::is_same_v<T, ResListing>) {
             apply_listing(res);
         } else if constexpr (std::is_same_v<T, ResError>) {
             log(LogLevel::ERROR, res.message);

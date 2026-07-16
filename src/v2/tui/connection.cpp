@@ -169,6 +169,20 @@ void Connection::handle(const Command& cmd) {
                 const auto r = client_.download(c.remote, c.local, progress);
                 sink_(ResDownloadDone{r.ok, r.checksum_ok, c.display, r.error});
                 if (!r.ok && !client_.connected()) reconnect_loop();
+            } else if constexpr (std::is_same_v<T, CmdAdminStats>) {
+                sink_(ResAdminStats{client_.admin_stats()});
+            } else if constexpr (std::is_same_v<T, CmdAdminClients>) {
+                sink_(ResAdminClients{client_.admin_list_clients()});
+            } else if constexpr (std::is_same_v<T, CmdAdminKick>) {
+                const auto res = client_.admin_kick(c.session_id);
+                sink_(ResInfo{"kick: " + res.message, res.ok});
+                sink_(ResAdminClients{client_.admin_list_clients()});   // refresh list
+            } else if constexpr (std::is_same_v<T, CmdAdminSet>) {
+                const auto res = client_.admin_set(c.key, c.value);
+                sink_(ResAdminSetResult{res.ok, res.message});
+                sink_(ResAdminConfig{client_.admin_get_config()});      // refresh values
+            } else if constexpr (std::is_same_v<T, CmdAdminGetConfig>) {
+                sink_(ResAdminConfig{client_.admin_get_config()});
             }
         } catch (const RemoteError& e) {
             sink_(ResError{e.what()});

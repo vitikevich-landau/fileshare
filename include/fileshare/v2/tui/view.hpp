@@ -19,4 +19,7 @@ namespace fileshare::v2::tui {
 // panel's connection badge.
 [[nodiscard]] ftxui::Element render_panel(const Panel& p, bool active, Link link);
 
+// The admin panel (F9): Overview / Clients / Settings tabs.
+[[nodiscard]] ftxui::Element render_admin(const AppState& app);
+
 } // namespace fileshare::v2::tui

@@ -76,17 +76,29 @@ void handle_download(ServerContext& ctx, Session& session, const Frame& fr) {
     std::vector<char> buf(CHUNK_SIZE);
     std::uint64_t remaining = total - req.offset;
     bool failed = false;
+    TokenBucket bucket;   // this transfer's per-client rate bucket
     while (remaining > 0) {
+        // Read the bandwidth limits fresh EACH chunk: an admin lowering
+        // per_client_bps / global_bps slows this in-flight transfer immediately.
+        const auto cfg = ctx.settings();
         const std::size_t want = static_cast<std::size_t>(
             std::min<std::uint64_t>(CHUNK_SIZE, remaining));
-        in.read(buf.data(), static_cast<std::streamsize>(want));
+        const std::size_t grant = ctx.rate_limiter().throttle(
+            bucket, cfg->limits.per_client_bps, cfg->limits.global_bps, want);
+
+        in.read(buf.data(), static_cast<std::streamsize>(grant));
         const std::streamsize got = in.gcount();
         if (got <= 0) {
             failed = true;
             break;
         }
         const auto n = static_cast<std::size_t>(got);
-        send(session, encode_chunk_data(tid, reinterpret_cast<const std::uint8_t*>(buf.data()), n));
+        // Check the send: a closed socket (kick / shutdown) must break the loop
+        // rather than spin forever sending into a dead connection.
+        if (!session.send(encode_chunk_data(tid, reinterpret_cast<const std::uint8_t*>(buf.data()), n))) {
+            failed = true;
+            break;
+        }
         remaining -= n;
         ctx.add_bytes(n);
         session.add_bytes(n);
@@ -114,7 +126,7 @@ void handle_download(ServerContext& ctx, Session& session, const Frame& fr) {
 void handle_admin(ServerContext& ctx, Session& session, const Frame& fr) {
     switch (fr.type) {
         case Msg::ADMIN_GET_CONFIG:
-            send(session, encode_admin_config(ctx.settings().to_json_string()));
+            send(session, encode_admin_config(ctx.settings()->to_json_string()));
             break;
         case Msg::ADMIN_STATS:
             send(session, encode_admin_stats_response(ctx.stats_snapshot()));
@@ -158,11 +170,23 @@ void handle_admin(ServerContext& ctx, Session& session, const Frame& fr) {
             ctx.request_stop();
             break;
         }
-        case Msg::ADMIN_SET:
-            // Hot config apply lands in M11 (SettingsHub). Reject clearly for now.
-            send(session, encode_admin_set_result(
-                     AdminSetResult{false, "live config changes not available yet (M11)"}));
+        case Msg::ADMIN_SET: {
+            const AdminSet a = parse_admin_set(fr.payload.data(), fr.payload.size());
+            std::string old_value;
+            const std::string err = ctx.settings_hub().set(a.key, a.value, &old_value);
+            AdminSetResult res;
+            res.ok = err.empty();
+            if (res.ok) {
+                res.message = a.key + ": " + old_value + " -> " + a.value;
+                log_info("admin '" + session.login() + "' set " + a.key + ": " + old_value +
+                         " -> " + a.value + " from " + session.ip());
+            } else {
+                res.message = err;
+                log_warn("admin '" + session.login() + "' set " + a.key + " rejected: " + err);
+            }
+            send(session, encode_admin_set_result(res));   // persist + EVENT_CONFIG via hub cb
             break;
+        }
         default:
             send_error(session, ErrCode::BAD_REQUEST, "unexpected admin message");
             break;
@@ -227,7 +251,7 @@ void dispatch(ServerContext& ctx, Session& session, const Frame& fr) {
 // --- Handshake --------------------------------------------------------------
 // Returns true if the session is authenticated and the request loop may run.
 bool do_handshake(net::Socket& sock, ServerContext& ctx, Session& session) {
-    const int hs_ms = static_cast<int>(ctx.settings().limits.handshake_timeout_s) * 1000;
+    const int hs_ms = static_cast<int>(ctx.settings()->limits.handshake_timeout_s) * 1000;
 
     // Reject a banned IP before doing any work.
     if (ctx.auth_guard().banned(session.ip(), std::chrono::steady_clock::now())) {
@@ -307,7 +331,7 @@ bool do_handshake(net::Socket& sock, ServerContext& ctx, Session& session) {
             user.has_value() &&
             verify_client_proof(*user, challenge, areq.proof, ctx.pbkdf2_iters());
         if (!ok_auth) {
-            ctx.auth_guard().fail(session.ip(), now, ctx.settings().limits.auth_fail_ban_s);
+            ctx.auth_guard().fail(session.ip(), now, ctx.settings()->limits.auth_fail_ban_s);
             // Slow down online guessing a touch (thread-per-connection: only this
             // attacker's thread pays).
             std::this_thread::sleep_for(std::chrono::milliseconds(300));
@@ -316,7 +340,7 @@ bool do_handshake(net::Socket& sock, ServerContext& ctx, Session& session) {
             return false;
         }
         // Enforce max concurrent sessions per user.
-        const std::uint32_t max_sess = ctx.settings().limits.max_sessions_per_user;
+        const std::uint32_t max_sess = ctx.settings()->limits.max_sessions_per_user;
         if (max_sess != 0 && ctx.sessions().sessions_for_login(user->login) >= max_sess) {
             send(session, encode_auth_fail(AuthFail{8, "too many concurrent sessions"}));
             log_warn("session cap reached for '" + user->login + "'");
@@ -331,7 +355,7 @@ bool do_handshake(net::Socket& sock, ServerContext& ctx, Session& session) {
     AuthOk aok;
     aok.role = role;
     aok.session_id = session.id();
-    aok.motd = ctx.settings().motd;
+    aok.motd = ctx.settings()->motd;
     send(session, encode_auth_ok(aok));
     log_info("session " + std::to_string(session.id()) + " authed as '" + login +
              "' (" + role_to_string(role) + ") from " + session.ip());
@@ -355,7 +379,7 @@ void handle_connection(net::Socket sock, ServerContext& ctx, std::string peer) {
 
     try {
         if (do_handshake(sock, ctx, *session)) {
-            const int idle_ms = static_cast<int>(ctx.settings().limits.idle_timeout_s) * 1000;
+            const int idle_ms = static_cast<int>(ctx.settings()->limits.idle_timeout_s) * 1000;
             while (ctx.accepting()) {
                 if (!net::wait_readable(sock, idle_ms)) {
                     log_debug("session " + std::to_string(sid) + " idle timeout");
@@ -406,12 +430,22 @@ void Server::serve(std::uint32_t grace_seconds) {
     net::set_nonblocking(listener_, true);
     log_info("serving on port -- v2 daemon ready");
 
+    // A hot config change (admin ADMIN_SET) persists to disk, updates the live
+    // log level, and notifies admin subscribers. Runs on the changer's thread.
+    ctx_.settings_hub().set_change_cb([this](const std::string& key, const std::string& value) {
+        if (key == "log.level") set_log_level(log_level_from_string(value));
+        const std::string path = ctx_.config_path().empty() ? "config.json" : ctx_.config_path();
+        try { ctx_.settings()->save(path); }
+        catch (const std::exception& e) { log_warn(std::string("could not persist config: ") + e.what()); }
+        ctx_.sessions().broadcast(SUB_CONFIG, encode_event_config(EventConfig{key, value}));
+    });
+
     // Live filesystem events: watch the share root, invalidate the checksum
     // cache on change and push EVENT_FS to subscribed sessions.
     std::unique_ptr<FsWatcher> watcher;
-    if (ctx_.settings().events_enabled) {
+    if (ctx_.settings()->events_enabled) {
         watcher = std::make_unique<FsWatcher>(
-            ctx_.vfs().root(), ctx_.settings().events_debounce_ms,
+            ctx_.vfs().root(), ctx_.settings()->events_debounce_ms,
             [this](FsOp op, EntryKind kind, const std::string& vpath,
                    std::uint64_t size, std::uint64_t mtime) {
                 ctx_.vfs().invalidate_checksum(vpath);
@@ -422,6 +456,14 @@ void Server::serve(std::uint32_t grace_seconds) {
     }
 
     while (ctx_.accepting()) {
+        if (ctx_.take_reload()) {   // SIGHUP: re-read config from disk
+            if (const std::string err = ctx_.reload_config(); !err.empty()) {
+                log_warn("config reload failed: " + err);
+            } else {
+                ctx_.sessions().broadcast(SUB_NOTICE,
+                    encode_event_notice(EventNotice{Severity::INFO, "configuration reloaded"}));
+            }
+        }
         if (!net::wait_readable(listener_, 200)) {
             continue;
         }
@@ -435,7 +477,7 @@ void Server::serve(std::uint32_t grace_seconds) {
         }
         if (!s) continue;   // half-open aborted / would-block
 
-        const std::uint64_t max_conn = ctx_.settings().limits.max_connections;
+        const std::uint64_t max_conn = ctx_.settings()->limits.max_connections;
         if (max_conn != 0 && static_cast<std::uint64_t>(ctx_.active_handlers()) >= max_conn) {
             // A broken pipe here must not unwind out of serve() and kill the
             // daemon -- rejecting an over-capacity client is best-effort. No

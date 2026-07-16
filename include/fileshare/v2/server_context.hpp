@@ -17,8 +17,10 @@
 
 #include "fileshare/v2/auth.hpp"
 #include "fileshare/v2/protocol.hpp"
+#include "fileshare/v2/rate_limiter.hpp"
 #include "fileshare/v2/session.hpp"
 #include "fileshare/v2/settings.hpp"
+#include "fileshare/v2/settings_hub.hpp"
 #include "fileshare/v2/vfs.hpp"
 
 namespace fileshare::v2 {
@@ -32,9 +34,20 @@ public:
     ServerContext(Settings settings, std::string config_path);
 
     [[nodiscard]] Vfs&             vfs() noexcept { return *vfs_; }
-    [[nodiscard]] const Settings&  settings() const noexcept { return settings_; }
+    // Hot-path config read: a snapshot shared_ptr (one atomic load). Callers use
+    // `->`; a live change is picked up on the next call to settings().
+    [[nodiscard]] std::shared_ptr<const Settings> settings() const { return hub_.current(); }
+    [[nodiscard]] SettingsHub&     settings_hub() noexcept { return hub_; }
+    [[nodiscard]] RateLimiter&     rate_limiter() noexcept { return rate_limiter_; }
     [[nodiscard]] SessionRegistry& sessions() noexcept { return sessions_; }
     [[nodiscard]] const std::string& config_path() const noexcept { return config_path_; }
+
+    // Reload the config file from disk (SIGHUP): re-reads users and applies the
+    // file's settings through the hub (so hot fields update; restart-only fields
+    // are ignored until a real restart). Returns "" or an error string.
+    std::string reload_config();
+    void request_reload() noexcept { reload_requested_.store(true); }
+    [[nodiscard]] bool take_reload() noexcept { return reload_requested_.exchange(false); }
 
     // --- Authentication -----------------------------------------------------
     // True if any users are configured (=> challenge auth required; otherwise a
@@ -43,7 +56,7 @@ public:
     [[nodiscard]] std::optional<User> find_user(const std::string& login) const;
     void reload_users();
     [[nodiscard]] AuthGuard& auth_guard() noexcept { return auth_guard_; }
-    [[nodiscard]] std::uint32_t pbkdf2_iters() const noexcept { return settings_.auth_pbkdf2_iters; }
+    [[nodiscard]] std::uint32_t pbkdf2_iters() const { return settings()->auth_pbkdf2_iters; }
 
     // --- Lifecycle ----------------------------------------------------------
     void mark_started() noexcept {
@@ -93,10 +106,12 @@ public:
     void save_cache() const;
 
 private:
-    Settings              settings_;
+    SettingsHub           hub_;
+    RateLimiter           rate_limiter_;
     std::string           config_path_;
     std::unique_ptr<Vfs>  vfs_;
     SessionRegistry       sessions_;
+    std::atomic<bool>     reload_requested_{false};
 
     mutable std::mutex    users_mutex_;
     UserDb                users_;

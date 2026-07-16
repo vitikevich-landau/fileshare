@@ -83,6 +83,8 @@ add_library(fileshare_v2_core
     src/v2/crypto.cpp
     src/v2/auth.cpp
     src/v2/settings.cpp
+    src/v2/settings_hub.cpp
+    src/v2/rate_limiter.cpp
     src/v2/session.cpp
     src/v2/dispatch.cpp
     src/v2/log.cpp
