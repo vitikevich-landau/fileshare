@@ -46,3 +46,8 @@ core.*
 # OS
 .DS_Store
 Thumbs.db
+
+# out-of-tree sanitizer/build dirs
+/build-asan/
+/build-tsan/
+/build-*/
