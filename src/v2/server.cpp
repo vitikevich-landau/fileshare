@@ -36,17 +36,26 @@ void handle_download(net::Socket& sock, ServerContext& ctx, Session& session, co
     const DownloadRequest req = parse_download_request(fr.payload.data(), fr.payload.size());
     const std::string norm = normalize_vpath(req.path);
 
-    const DirEntry meta = ctx.vfs().stat(norm);          // throws FsError on miss
-    if (meta.kind == EntryKind::DIR) {
+    // Resolve once (canonical, proven in-root) and derive everything from the
+    // single open handle: size and bytes then come from the same inode, so a
+    // concurrent rename can't make us stream one file while reporting another's
+    // size. (Full defense against a parent-component symlink swap needs
+    // openat/O_NOFOLLOW; tracked for the multi-tenant/upload milestone.)
+    const std::filesystem::path real = ctx.vfs().resolve(norm);
+    std::error_code ec;
+    if (std::filesystem::is_directory(real, ec)) {
         throw FsError(ErrCode::IS_A_DIRECTORY, "cannot download a directory");
     }
-    const std::filesystem::path real = ctx.vfs().resolve(norm);
-
     std::ifstream in(real, std::ios::binary);
     if (!in) {
         throw FsError(ErrCode::FILE_NOT_FOUND, "cannot open: " + norm);
     }
-    const std::uint64_t total = meta.size;
+    in.seekg(0, std::ios::end);
+    const std::streamoff endpos = in.tellg();
+    if (endpos < 0) {
+        throw FsError(ErrCode::INTERNAL_ERROR, "cannot size: " + norm);
+    }
+    const std::uint64_t total = static_cast<std::uint64_t>(endpos);
     if (req.offset > total) {
         send_error(sock, ErrCode::UNSUPPORTED_OFFSET, "offset past end of file");
         return;
@@ -54,8 +63,11 @@ void handle_download(net::Socket& sock, ServerContext& ctx, Session& session, co
     in.seekg(static_cast<std::streamoff>(req.offset));
 
     const std::uint32_t tid = ctx.next_transfer_id();
-    send(sock, encode_download_accept(DownloadAccept{tid, total}));
+    // Mark the transfer in-flight BEFORE announcing it and keep it marked until
+    // DOWNLOAD_DONE has been sent, so graceful drain never misreads an active
+    // transfer as idle (and never tears it down mid-stream).
     session.set_current_path(norm);
+    send(sock, encode_download_accept(DownloadAccept{tid, total}));
 
     std::vector<char> buf(CHUNK_SIZE);
     std::uint64_t remaining = total - req.offset;
@@ -76,19 +88,21 @@ void handle_download(net::Socket& sock, ServerContext& ctx, Session& session, co
         session.add_bytes(n);
     }
 
-    session.set_current_path("");
     if (failed) {
+        session.set_current_path("");
         send_error(sock, ErrCode::INTERNAL_ERROR, "read error during transfer");
         return;
     }
 
-    // Full-file checksum (cached) -- independent of the resume offset.
+    // Full-file checksum (cached) -- independent of the resume offset. Computed
+    // while still marked in-flight so drain waits for it before tearing down.
     const ChecksumResponse cr = ctx.vfs().checksum(norm);
     DownloadDone done;
     done.transfer_id = tid;
     done.algo = cr.algo;
     done.checksum = cr.checksum;
     send(sock, encode_download_done(done));
+    session.set_current_path("");
     ctx.inc_completed();
 }
 
@@ -324,6 +338,14 @@ bool do_handshake(net::Socket& sock, ServerContext& ctx, Session& session) {
 
 // --- Connection handler -----------------------------------------------------
 void handle_connection(net::Socket sock, ServerContext& ctx, std::string peer) {
+    // Balances ctx.handler_started() (called by the accept thread before detach);
+    // guarantees the count drops even on an exception, so wait_for_handlers()
+    // in serve() cannot return while this thread is still touching ctx.
+    struct HandlerGuard {
+        ServerContext& c;
+        ~HandlerGuard() { c.handler_finished(); }
+    } guard{ctx};
+
     auto session = ctx.sessions().add(ip_of(peer), sock.handle());
     const std::uint64_t sid = session->id();
 
@@ -395,11 +417,20 @@ void Server::serve(std::uint32_t grace_seconds) {
         if (!s) continue;   // half-open aborted / would-block
 
         const std::uint64_t max_conn = ctx_.settings().limits.max_connections;
-        if (max_conn != 0 && ctx_.sessions().size() >= max_conn) {
-            send_error(*s, ErrCode::RATE_LIMITED, "server at capacity");
+        if (max_conn != 0 && static_cast<std::uint64_t>(ctx_.active_handlers()) >= max_conn) {
+            // A broken pipe here must not unwind out of serve() and kill the
+            // daemon -- rejecting an over-capacity client is best-effort.
+            try {
+                send_error(*s, ErrCode::RATE_LIMITED, "server at capacity");
+            } catch (const net::NetError&) {
+                // client already gone; nothing to do
+            }
             s->close();
             continue;
         }
+        // Count the handler live BEFORE detaching, so the drain barrier below
+        // can never observe a not-yet-started thread as "done".
+        ctx_.handler_started();
         std::thread(handle_connection, std::move(*s), std::ref(ctx_), peer).detach();
     }
 
@@ -411,12 +442,12 @@ void Server::serve(std::uint32_t grace_seconds) {
            std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-    ctx_.sessions().shutdown_all();    // force-close whatever remains
-    // Give detached handlers a moment to unwind before the context dies.
-    const auto hard = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (ctx_.sessions().size() > 0 && std::chrono::steady_clock::now() < hard) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
+    ctx_.sessions().shutdown_all();    // force-close whatever remains (unblocks recv/send)
+    // Wait unconditionally for every handler thread to return before we let the
+    // caller destroy the ServerContext. shutdown_all() has closed all sockets,
+    // so blocked threads wake immediately; a thread mid-checksum finishes and
+    // exits. This closes the detached-thread use-after-free window.
+    ctx_.wait_for_handlers();
     ctx_.save_cache();
     log_info("stopped");
 }

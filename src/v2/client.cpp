@@ -162,9 +162,26 @@ Client::DownloadResult Client::download(const std::string& remote, const std::st
     }
 
     try {
-        Frame acc = request(encode_download_request(DownloadRequest{remote, offset}),
-                            Msg::DOWNLOAD_ACCEPT);
-        const DownloadAccept accept = parse_download_accept(acc.payload.data(), acc.payload.size());
+        // Negotiate the transfer. If the remote file shrank below our resume
+        // offset, the server rejects it (UNSUPPORTED_OFFSET); drop the stale
+        // .part and retry from the start instead of getting stuck forever.
+        DownloadAccept accept{};
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            try {
+                Frame acc = request(encode_download_request(DownloadRequest{remote, offset}),
+                                    Msg::DOWNLOAD_ACCEPT);
+                accept = parse_download_accept(acc.payload.data(), acc.payload.size());
+                break;
+            } catch (const RemoteError& e) {
+                if (e.code() == ErrCode::UNSUPPORTED_OFFSET && offset > 0) {
+                    fs::remove(part, ec);
+                    offset = 0;
+                    res.resumed = false;
+                    continue;   // retry from scratch
+                }
+                throw;
+            }
+        }
         const std::uint64_t total = accept.total_size;
         res.bytes = total;
 
@@ -187,6 +204,12 @@ Client::DownloadResult Client::download(const std::string& remote, const std::st
             switch (fr->type) {
                 case Msg::CHUNK_DATA: {
                     const ChunkView v = parse_chunk_data(fr->payload.data(), fr->payload.size());
+                    // Guard against a buggy/hostile server streaming past the
+                    // declared size and filling the disk.
+                    if (done + v.len > total) {
+                        res.error = "server sent more data than declared";
+                        return res;
+                    }
                     out.write(reinterpret_cast<const char*>(v.data),
                               static_cast<std::streamsize>(v.len));
                     done += v.len;
@@ -208,6 +231,10 @@ Client::DownloadResult Client::download(const std::string& remote, const std::st
             }
         }
         out.close();
+        if (!out) {   // flush/close error -> the .part is not trustworthy
+            res.error = "write error finalizing " + part;
+            return res;
+        }
 
         // Verify against the server's full-file checksum.
         const FileDigest digest = compute_file_digest(part);
@@ -223,12 +250,17 @@ Client::DownloadResult Client::download(const std::string& remote, const std::st
             res.checksum_ok = false;
         }
 
-        // Success: atomically move .part -> final name.
+        // Success: atomically move .part -> final name. Only report success if
+        // the file actually lands -- otherwise surface the error and keep .part.
         fs::rename(part, local, ec);
         if (ec) {
-            // Fall back to copy+remove across filesystems.
-            fs::copy_file(part, local, fs::copy_options::overwrite_existing, ec);
-            fs::remove(part, ec);
+            std::error_code cec;
+            fs::copy_file(part, local, fs::copy_options::overwrite_existing, cec);
+            if (cec) {
+                res.error = "cannot place downloaded file: " + cec.message();
+                return res;   // ok stays false; .part preserved
+            }
+            fs::remove(part, cec);
         }
         res.ok = true;
         return res;

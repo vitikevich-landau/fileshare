@@ -95,6 +95,14 @@ fs::path Vfs::resolve(const std::string& vpath, bool must_exist) const {
             if (ec || !is_within(root_, pcanon)) {
                 throw FsError(ErrCode::ACCESS_DENIED, "path escapes share root");
             }
+            // The leaf may already exist as a (dangling) symlink whose target is
+            // outside the root -- canonical() above failed precisely because the
+            // target is absent, so is_within never got to inspect it. Reject any
+            // symlink leaf: a create/upload must never follow one out of the root.
+            std::error_code lec;
+            if (fs::is_symlink(candidate, lec)) {
+                throw FsError(ErrCode::ACCESS_DENIED, "refusing to follow a symlink leaf");
+            }
             return pcanon / candidate.filename();
         }
         throw FsError(ErrCode::FILE_NOT_FOUND, "no such path: " + norm);

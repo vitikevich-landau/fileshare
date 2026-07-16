@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -61,6 +62,27 @@ public:
 
     [[nodiscard]] std::uint32_t next_transfer_id() noexcept { return next_transfer_.fetch_add(1); }
 
+    // --- Connection-handler lifetime tracking -------------------------------
+    // handler_started() is called by the accept thread BEFORE it detaches a
+    // handler (so the count is live before the thread runs); handler_finished()
+    // by the handler as it exits. wait_for_handlers() blocks until every handler
+    // has returned, so serve() never lets a detached thread outlive this object.
+    void handler_started() noexcept { active_handlers_.fetch_add(1); }
+    void handler_finished() noexcept {
+        if (active_handlers_.fetch_sub(1) == 1) {
+            std::lock_guard<std::mutex> lk(handler_mu_);
+        }
+        handler_cv_.notify_all();
+    }
+    void wait_for_handlers() {
+        std::unique_lock<std::mutex> lk(handler_mu_);
+        handler_cv_.wait(lk, [this] { return active_handlers_.load() == 0; });
+    }
+    // Live connection count, updated synchronously on the (single) accept thread
+    // before each detach -- unlike sessions().size(), which lags until the worker
+    // registers, so it gives an exact cap with no accept-burst overshoot.
+    [[nodiscard]] int active_handlers() const noexcept { return active_handlers_.load(); }
+
     // Snapshot for ADMIN_STATS.
     [[nodiscard]] AdminStats stats_snapshot() const;
 
@@ -82,6 +104,10 @@ private:
     std::atomic<std::uint32_t> next_transfer_{1};
     std::atomic<bool>          accepting_{false};
     std::chrono::steady_clock::time_point start_time_{};
+
+    std::atomic<int>           active_handlers_{0};
+    std::mutex                 handler_mu_;
+    std::condition_variable    handler_cv_;
 };
 
 } // namespace fileshare::v2

@@ -162,6 +162,30 @@ TEST(V2Vfs, SymlinkEscapeIsBlockedAndHidden) {
     }
 }
 
+TEST(V2Vfs, ResolveNonexistentLeafStaysInRoot) {
+    TempTree t;
+    Vfs vfs(t.root());
+    // A to-be-created file (upload path) resolves under the root.
+    const fs::path r = vfs.resolve("/newfile.bin", /*must_exist=*/false);
+    EXPECT_EQ(r.filename().string(), "newfile.bin");
+    EXPECT_EQ(r.parent_path(), vfs.root());
+}
+
+TEST(V2Vfs, ResolveDanglingSymlinkLeafRejected) {
+    TempTree t;
+    std::error_code ec;
+    // A symlink leaf whose target does not yet exist and points outside the root.
+    fs::create_symlink("/outside/does-not-exist", t.root() / "up", ec);
+    if (ec) GTEST_SKIP() << "symlinks not supported here";
+    Vfs vfs(t.root());
+    try {
+        (void)vfs.resolve("/up", /*must_exist=*/false);
+        FAIL() << "expected FsError";
+    } catch (const FsError& e) {
+        EXPECT_EQ(e.code(), ErrCode::ACCESS_DENIED);
+    }
+}
+
 TEST(V2Vfs, InternalSymlinkIsAllowed) {
     TempTree t;
     std::error_code ec;

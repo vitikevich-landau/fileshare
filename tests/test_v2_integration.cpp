@@ -166,6 +166,21 @@ TEST_F(V2Server, DownloadResumesFromPart) {
     EXPECT_EQ(read_file(dst), big_content_);   // resumed bytes + streamed tail = whole file
 }
 
+TEST_F(V2Server, DownloadRecoversWhenPartLargerThanRemote) {
+    // A stale .part bigger than the (shrunk) remote file must not wedge the
+    // download: the client drops it and restarts from zero.
+    Client c; connect_ok(c);
+    const fs::path dst = out_ / "readme.txt";
+    const fs::path part = fs::path(dst.string() + ".part");
+    { std::ofstream(part, std::ios::binary) << std::string(500, 'Q'); }  // > 11 bytes
+
+    const auto r = c.download("/readme.txt", dst.string());
+    ASSERT_TRUE(r.ok) << r.error;
+    EXPECT_TRUE(r.checksum_ok);
+    EXPECT_EQ(read_file(dst), "hello world");
+    EXPECT_FALSE(fs::exists(part));
+}
+
 TEST_F(V2Server, DownloadMissingFileErrors) {
     Client c; connect_ok(c);
     const auto r = c.download("/nope.bin", (out_ / "nope.bin").string());
