@@ -68,9 +68,18 @@ std::string link_badge(Link l) {
     return "[?]";
 }
 
+Color link_color(Link l) {
+    switch (l) {
+        case Link::CONNECTED:    return Color::Green;
+        case Link::RECONNECTING: return Color::Yellow;
+        case Link::DOWN:         return Color::Red;
+    }
+    return Color::GrayLight;
+}
+
 } // namespace
 
-Element render_panel(const Panel& p, bool active) {
+Element render_panel(const Panel& p, bool active, Link link) {
     Elements rows;
     if (p.loading) {
         rows.push_back(text("  loading...") | color(Color::Yellow));
@@ -82,8 +91,13 @@ Element render_panel(const Panel& p, bool active) {
         }
     }
 
-    std::string header = p.title();
-    if (p.source == Source::REMOTE) header += " " + link_badge(Link::CONNECTED);
+    Element header_el;
+    if (p.source == Source::REMOTE) {
+        header_el = hbox({text(p.title() + " "),
+                          text(link_badge(link)) | color(link_color(link)) | ftxui::bold});
+    } else {
+        header_el = text(p.title());
+    }
 
     std::string footer = std::to_string(p.entries.size()) + " items";
     if (!p.entries.empty()) footer += ", " + human_size(p.total_size());
@@ -92,7 +106,7 @@ Element render_panel(const Panel& p, bool active) {
 
     Element body = vbox(std::move(rows)) | frame | flex;
     Element box = vbox({
-        text(header) | (active ? (color(Color::White) | ftxui::bold) : color(Color::GrayLight)),
+        header_el | (active ? (color(Color::White) | ftxui::bold) : color(Color::GrayLight)),
         separator(),
         body,
         separator(),
@@ -106,8 +120,8 @@ Element render_panel(const Panel& p, bool active) {
 Element render_commander(const AppState& app, bool admin, const std::string& prompt) {
     const int a = app.active_index();
     Element panels = hbox({
-        render_panel(app.panel(0), a == 0) | flex,
-        render_panel(app.panel(1), a == 1) | flex,
+        render_panel(app.panel(0), a == 0, app.link()) | flex,
+        render_panel(app.panel(1), a == 1, app.link()) | flex,
     }) | flex;
 
     // Transfer line.

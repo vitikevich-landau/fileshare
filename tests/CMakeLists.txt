@@ -28,6 +28,7 @@ add_executable(fileshare_tests
     test_v2_crypto.cpp
     test_v2_integration.cpp
     test_v2_auth_integration.cpp
+    test_v2_events.cpp
     test_v2_tui_model.cpp)
 target_link_libraries(fileshare_tests PRIVATE
     fileshare_core

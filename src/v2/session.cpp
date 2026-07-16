@@ -1,5 +1,7 @@
 #include "fileshare/v2/session.hpp"
 
+#include <ctime>
+
 #include "fileshare/net.hpp"
 
 namespace fileshare::v2 {
@@ -35,6 +37,27 @@ void Session::set_current_path(const std::string& p) {
 std::string Session::current_path() const {
     std::lock_guard<std::mutex> lk(mu_);
     return current_path_;
+}
+
+bool Session::send(const std::vector<std::uint8_t>& frame, bool blocking) {
+    if (dead_.load()) return false;
+    std::unique_lock<std::mutex> lk(send_mutex_, std::defer_lock);
+    if (blocking) {
+        lk.lock();
+    } else if (!lk.try_lock()) {
+        return false;   // busy (mid-transfer / responding) -- event bus skips
+    }
+    try {
+        net::send_all(handle_, frame.data(), frame.size());
+        return true;
+    } catch (const net::NetError&) {
+        dead_.store(true);
+        return false;
+    }
+}
+
+void Session::touch() noexcept {
+    last_activity_.store(static_cast<std::uint64_t>(std::time(nullptr)));
 }
 
 SessionSnapshot Session::snapshot() const {
@@ -89,6 +112,24 @@ void SessionRegistry::shutdown_idle() {
             net::shutdown_handle(s->handle());
         }
     }
+}
+
+std::size_t SessionRegistry::broadcast(std::uint32_t sub_bit,
+                                       const std::vector<std::uint8_t>& frame) {
+    // Snapshot the shared_ptrs under the lock, then send outside it so a slow
+    // send never blocks other connections from registering/leaving.
+    std::vector<std::shared_ptr<Session>> targets;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        for (auto& [id, s] : sessions_) {
+            if (s->subscription() & sub_bit) targets.push_back(s);
+        }
+    }
+    std::size_t delivered = 0;
+    for (auto& s : targets) {
+        if (s->send(frame, /*blocking=*/false)) ++delivered;
+    }
+    return delivered;
 }
 
 std::size_t SessionRegistry::size() const {

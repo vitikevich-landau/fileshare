@@ -69,10 +69,13 @@ public:
     // has returned, so serve() never lets a detached thread outlive this object.
     void handler_started() noexcept { active_handlers_.fetch_add(1); }
     void handler_finished() noexcept {
+        // Notify UNDER the mutex so the waiter cannot return (and destroy this
+        // condvar) between the decrement and the notify -- a classic teardown
+        // race flagged by TSan otherwise.
+        std::lock_guard<std::mutex> lk(handler_mu_);
         if (active_handlers_.fetch_sub(1) == 1) {
-            std::lock_guard<std::mutex> lk(handler_mu_);
+            handler_cv_.notify_all();
         }
-        handler_cv_.notify_all();
     }
     void wait_for_handlers() {
         std::unique_lock<std::mutex> lk(handler_mu_);

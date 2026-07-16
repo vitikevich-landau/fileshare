@@ -54,6 +54,9 @@ struct Panel {
 enum class LogLevel { INFO, GOOD, WARN, ERROR };
 struct LogLine { LogLevel level; std::string text; };
 
+// Connection status shown in the remote panel header.
+enum class Link { CONNECTED, RECONNECTING, DOWN };
+
 // --- Commands (UI -> worker) and Results (worker -> UI) ---------------------
 struct CmdListDir  { int panel; std::string path; };
 struct CmdDownload { std::string remote; std::string local; std::string display; };
@@ -66,11 +69,10 @@ struct ResProgress { std::string display; std::uint64_t done; std::uint64_t tota
                      std::uint64_t bps; };
 struct ResDownloadDone { bool ok; bool checksum_ok; std::string display; std::string error; };
 struct ResDisconnected { std::string reason; };
+struct ResReconnected  {};                 // link restored after auto-reconnect
+struct ResLink         { Link link; };     // link-status transition (e.g. reconnecting)
 using Result = std::variant<ResListing, ResError, ResInfo, ResProgress,
-                            ResDownloadDone, ResDisconnected>;
-
-// Connection status shown in the remote panel header.
-enum class Link { CONNECTED, RECONNECTING, DOWN };
+                            ResDownloadDone, ResDisconnected, ResReconnected, ResLink>;
 
 // The whole UI state. Owned and mutated only on the UI thread.
 class AppState {

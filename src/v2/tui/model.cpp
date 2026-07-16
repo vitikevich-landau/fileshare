@@ -294,6 +294,12 @@ void AppState::apply(const Result& r) {
         } else if constexpr (std::is_same_v<T, ResDisconnected>) {
             set_link(Link::DOWN);
             log(LogLevel::ERROR, "connection lost: " + res.reason);
+        } else if constexpr (std::is_same_v<T, ResReconnected>) {
+            set_link(Link::CONNECTED);
+            log(LogLevel::GOOD, "reconnected");
+        } else if constexpr (std::is_same_v<T, ResLink>) {
+            set_link(res.link);
+            if (res.link == Link::RECONNECTING) log(LogLevel::WARN, "reconnecting...");
         }
     }, r);
 }

@@ -54,9 +54,18 @@ public:
     [[nodiscard]] DirEntry              stat(const std::string& path);
     [[nodiscard]] ChecksumResponse      checksum(const std::string& path);
 
-    // Subscribe to server push events (delivered from M10; harmless earlier).
+    // Subscribe to server push events. Unsolicited EVENT_*/PONG frames that
+    // arrive between requests (or during a download) are delivered here.
     void subscribe(std::uint32_t mask);
-    void ping();
+    void set_event_handler(std::function<void(const Frame&)> handler) {
+        event_handler_ = std::move(handler);
+    }
+    void send_ping();   // fire-and-forget heartbeat; the PONG is an async frame
+
+    enum class PollResult { NONE, EVENT, CLOSED };
+    // Read + dispatch any server-pushed frames ready within timeout_ms. Returns
+    // EVENT if one was handled, NONE on timeout, CLOSED if the peer hung up.
+    PollResult poll_events(int timeout_ms);
 
     // --- Download -----------------------------------------------------------
     struct DownloadResult {
@@ -89,6 +98,10 @@ private:
 
     net::Socket sock_;
     bool        connected_ = false;
+    std::function<void(const Frame&)> event_handler_;
 };
+
+// True for frames the server may push unsolicited (events + PONG).
+[[nodiscard]] bool is_async_frame(Msg m) noexcept;
 
 } // namespace fileshare::v2

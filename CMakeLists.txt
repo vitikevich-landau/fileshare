@@ -86,6 +86,7 @@ add_library(fileshare_v2_core
     src/v2/session.cpp
     src/v2/dispatch.cpp
     src/v2/log.cpp
+    src/v2/fs_watcher.cpp
     src/v2/server_context.cpp
     src/v2/server.cpp
     src/v2/client.cpp)

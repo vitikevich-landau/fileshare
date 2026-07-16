@@ -15,7 +15,8 @@ namespace fileshare::v2::tui {
 [[nodiscard]] ftxui::Element render_commander(const AppState& app, bool admin,
                                               const std::string& prompt);
 
-// Render one panel (exposed for focused tests).
-[[nodiscard]] ftxui::Element render_panel(const Panel& p, bool active);
+// Render one panel (exposed for focused tests). `link` colours the remote
+// panel's connection badge.
+[[nodiscard]] ftxui::Element render_panel(const Panel& p, bool active, Link link);
 
 } // namespace fileshare::v2::tui

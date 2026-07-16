@@ -174,8 +174,8 @@ std::string make_prompt(const std::string& login, const std::string& host, const
 }
 
 // --- Interactive session ----------------------------------------------------
-void run_session(Client& client, const std::string& login, const std::string& host, bool admin,
-                 Profile& profile) {
+void run_session(Client& client, const std::string& login, const std::string& host,
+                 std::uint16_t port, const std::string& password, bool admin, Profile& profile) {
     AppState app;
     app.panel(0).source = Source::LOCAL;
     app.panel(1).source = Source::REMOTE;
@@ -188,16 +188,22 @@ void run_session(Client& client, const std::string& login, const std::string& ho
 
     std::mutex inbox_mu;
     std::deque<Result> inbox;
-    Connection conn(client, [&](Result r) {
-        { std::lock_guard<std::mutex> lk(inbox_mu); inbox.push_back(std::move(r)); }
-        screen.PostEvent(Event::Custom);
-    });
+    Connection conn(
+        client,
+        [&](Result r) {
+            { std::lock_guard<std::mutex> lk(inbox_mu); inbox.push_back(std::move(r)); }
+            screen.PostEvent(Event::Custom);
+        },
+        // Reconnect the same Client with the original credentials.
+        [&client, host, port, login, password] {
+            return client.connect(host, port, login, password).ok;
+        });
+    conn.set_subscription(SUB_FS | SUB_NOTICE);
     conn.start();
 
-    // Initial remote listing.
+    // Initial remote listing (SUBSCRIBE is armed by the worker thread).
     app.set_loading(1, true);
     conn.submit(CmdListDir{1, "/"});
-    client.subscribe(SUB_FS | SUB_NOTICE);   // harmless before M10 delivers events
 
     auto drain = [&] {
         std::lock_guard<std::mutex> lk(inbox_mu);
@@ -352,7 +358,8 @@ int main(int argc, char** argv) {
             profile = &profiles.back();
         }
 
-        run_session(client, form.login, form.host, cr.role == Role::ADMIN, *profile);
+        run_session(client, form.login, form.host, *port, form.password,
+                    cr.role == Role::ADMIN, *profile);
         client.disconnect();
         save_profiles(profiles);
         return 0;   // one session per launch in M9

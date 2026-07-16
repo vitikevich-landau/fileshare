@@ -79,6 +79,10 @@ inline void send_all(Socket& s, const std::vector<std::uint8_t>& buf) {
     send_all(s, buf.data(), buf.size());
 }
 
+// Send on a raw handle (used to push server->client frames from a thread other
+// than the one that owns the Socket, e.g. the event bus). Throws NetError.
+void send_all(std::intptr_t handle, const std::uint8_t* data, std::size_t len);
+
 // Read exactly `len` bytes. Returns the count actually read; a value < len
 // means the peer closed the connection. Throws NetError on a socket error.
 [[nodiscard]] std::size_t recv_exact(Socket& s, std::uint8_t* dst, std::size_t len);

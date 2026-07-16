@@ -55,6 +55,16 @@ public:
     void set_current_path(const std::string& p);
     [[nodiscard]] std::string current_path() const;
 
+    // Serialized frame send: the connection thread (responses/chunks) and the
+    // event bus (pushes) both write here, so the mutex keeps frames atomic on
+    // the wire. Returns false if the socket write failed (peer gone) or the
+    // session was marked dead. blocking=false (event bus) skips delivery rather
+    // than waiting on a busy/slow session.
+    bool send(const std::vector<std::uint8_t>& frame, bool blocking = true);
+    [[nodiscard]] bool alive() const noexcept { return !dead_.load(); }
+    [[nodiscard]] std::uint64_t last_activity_unix() const noexcept { return last_activity_.load(); }
+    void touch() noexcept;   // record activity (recv/heartbeat) for idle checks
+
     [[nodiscard]] SessionSnapshot snapshot() const;
 
 private:
@@ -65,7 +75,10 @@ private:
 
     std::atomic<std::uint64_t> bytes_sent_{0};
     std::atomic<std::uint32_t> sub_mask_{0};
+    std::atomic<bool>          dead_{false};
+    std::atomic<std::uint64_t> last_activity_{0};
 
+    std::mutex         send_mutex_;    // serializes writes to the socket
     mutable std::mutex mu_;
     bool        authed_ = false;
     Role        role_ = Role::ANONYMOUS;
@@ -82,6 +95,10 @@ public:
     bool kick(std::uint64_t id);          // half-close; true if it existed
     void shutdown_all();                  // half-close every connection
     void shutdown_idle();                 // half-close only non-downloading ones
+
+    // Deliver a frame to every session subscribed to `sub_bit` (non-blocking:
+    // sessions busy sending are skipped). Returns how many received it.
+    std::size_t broadcast(std::uint32_t sub_bit, const std::vector<std::uint8_t>& frame);
 
     [[nodiscard]] std::size_t size() const;
     [[nodiscard]] std::size_t downloading_count() const;

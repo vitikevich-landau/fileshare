@@ -268,6 +268,24 @@ void send_all(Socket& s, const std::uint8_t* data, std::size_t len) {
     }
 }
 
+void send_all(std::intptr_t handle, const std::uint8_t* data, std::size_t len) {
+    const native_socket fd = static_cast<native_socket>(handle);
+    std::size_t sent = 0;
+    while (sent < len) {
+        const std::size_t want = std::min(len - sent, kIoChunk);
+        const auto n = ::send(fd, reinterpret_cast<const char*>(data + sent),
+                              static_cast<send_len_t>(want), 0);
+        if (n <= 0) {
+            const int e = last_error();
+            if (n < 0 && is_eintr(e)) {
+                continue;
+            }
+            throw NetError("send failed: " + error_string(e));
+        }
+        sent += static_cast<std::size_t>(n);
+    }
+}
+
 std::size_t recv_exact(Socket& s, std::uint8_t* dst, std::size_t len) {
     std::size_t got = 0;
     while (got < len) {

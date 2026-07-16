@@ -15,22 +15,48 @@ namespace fileshare::v2 {
 
 Client::~Client() { disconnect(); }
 
+bool is_async_frame(Msg m) noexcept {
+    return m == Msg::EVENT_FS || m == Msg::EVENT_NOTICE || m == Msg::EVENT_CONFIG ||
+           m == Msg::PONG;
+}
+
 // --- Low-level request/response --------------------------------------------
 Frame Client::recv_expect(Msg expect) {
+    // Loop so server-pushed events (or a PONG) that arrive before the expected
+    // reply are dispatched out of band rather than mistaken for the response.
+    for (;;) {
+        std::optional<Frame> fr = recv_frame(sock_);
+        if (!fr) {
+            connected_ = false;
+            throw RemoteError(ErrCode::INTERNAL_ERROR, "connection closed by server");
+        }
+        if (is_async_frame(fr->type)) {
+            if (event_handler_) event_handler_(*fr);
+            continue;
+        }
+        if (fr->type == Msg::ERROR_MSG) {
+            const ErrorMessage e = parse_error(fr->payload.data(), fr->payload.size());
+            throw RemoteError(e.code, e.message);
+        }
+        if (fr->type != expect) {
+            throw RemoteError(ErrCode::INTERNAL_ERROR,
+                              std::string("unexpected reply: ") + msg_name(fr->type));
+        }
+        return std::move(*fr);
+    }
+}
+
+Client::PollResult Client::poll_events(int timeout_ms) {
+    if (!connected_) return PollResult::CLOSED;
+    if (!net::wait_readable(sock_, timeout_ms)) return PollResult::NONE;
     std::optional<Frame> fr = recv_frame(sock_);
-    if (!fr) {
-        connected_ = false;
-        throw RemoteError(ErrCode::INTERNAL_ERROR, "connection closed by server");
-    }
-    if (fr->type == Msg::ERROR_MSG) {
-        const ErrorMessage e = parse_error(fr->payload.data(), fr->payload.size());
-        throw RemoteError(e.code, e.message);
-    }
-    if (fr->type != expect) {
-        throw RemoteError(ErrCode::INTERNAL_ERROR,
-                          std::string("unexpected reply: ") + msg_name(fr->type));
-    }
-    return std::move(*fr);
+    if (!fr) { connected_ = false; return PollResult::CLOSED; }
+    if (event_handler_) event_handler_(*fr);
+    return PollResult::EVENT;
+}
+
+void Client::send_ping() {
+    send_frame(sock_, encode_ping());   // PONG comes back as an async frame
 }
 
 Frame Client::request(const std::vector<std::uint8_t>& frame, Msg expect) {
@@ -137,10 +163,6 @@ void Client::subscribe(std::uint32_t mask) {
     send_frame(sock_, encode_subscribe(Subscribe{mask}));   // fire-and-forget
 }
 
-void Client::ping() {
-    (void)request(encode_ping(), Msg::PONG);
-}
-
 // --- Download ---------------------------------------------------------------
 namespace {
 std::uint8_t algo_code_of(const std::string& algo) {
@@ -201,6 +223,10 @@ Client::DownloadResult Client::download(const std::string& remote, const std::st
         while (!got_done) {
             std::optional<Frame> fr = recv_frame(sock_);
             if (!fr) { connected_ = false; res.error = "connection closed mid-transfer"; return res; }
+            if (is_async_frame(fr->type)) {   // event pushed during the transfer
+                if (event_handler_) event_handler_(*fr);
+                continue;
+            }
             switch (fr->type) {
                 case Msg::CHUNK_DATA: {
                     const ChunkView v = parse_chunk_data(fr->payload.data(), fr->payload.size());
