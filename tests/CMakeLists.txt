@@ -27,13 +27,23 @@ add_executable(fileshare_tests
     test_v2_dispatch.cpp
     test_v2_crypto.cpp
     test_v2_integration.cpp
-    test_v2_auth_integration.cpp)
+    test_v2_auth_integration.cpp
+    test_v2_tui_model.cpp)
 target_link_libraries(fileshare_tests PRIVATE
     fileshare_core
     fileshare_v2_core
+    fileshare_tui_core
     fileshare_server_lib
     fileshare_client_lib
     GTest::gtest_main
     fileshare_sanitizers)
 
 gtest_discover_tests(fileshare_tests)
+
+# Headless FTXUI view render tests (only when the TUI is built).
+if(TARGET fileshare_tui_view)
+    add_executable(fileshare_tui_tests test_v2_tui_view.cpp)
+    target_link_libraries(fileshare_tui_tests PRIVATE
+        fileshare_tui_view ftxui::dom ftxui::screen GTest::gtest_main fileshare_sanitizers)
+    gtest_discover_tests(fileshare_tui_tests)
+endif()

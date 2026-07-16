@@ -14,6 +14,7 @@ option(FILESHARE_ENABLE_ASAN  "Enable AddressSanitizer" OFF)
 option(FILESHARE_ENABLE_TSAN  "Enable ThreadSanitizer"  OFF)
 option(FILESHARE_USE_SHA256   "Use SHA-256 (OpenSSL) instead of CRC32 for file checksums" OFF)
 option(FILESHARE_USE_COROUTINES "Use the C++20 coroutine epoll server (Linux)" OFF)
+option(FILESHARE_BUILD_TUI    "Build the FTXUI commander client" ON)
 
 # --- Warnings (zero-warnings policy, §8) ------------------------------------
 add_library(fileshare_warnings INTERFACE)
@@ -97,6 +98,39 @@ add_executable(fileshare_daemon_app src/v2/daemon_main.cpp)
 target_link_libraries(fileshare_daemon_app
     PRIVATE fileshare_v2_core fileshare_warnings fileshare_sanitizers)
 set_target_properties(fileshare_daemon_app PROPERTIES OUTPUT_NAME fileshare-daemon)
+
+# --- TUI commander client ---------------------------------------------------
+# tui_core is UI logic + the connection worker (no FTXUI, unit-testable). The
+# FTXUI view lives only in the executable.
+add_library(fileshare_tui_core
+    src/v2/tui/model.cpp
+    src/v2/tui/connection.cpp)
+target_link_libraries(fileshare_tui_core
+    PUBLIC  fileshare_v2_core
+    PRIVATE fileshare_warnings fileshare_sanitizers)
+
+if(FILESHARE_BUILD_TUI)
+    FetchContent_Declare(ftxui
+        GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
+        GIT_TAG        v5.0.0
+        FIND_PACKAGE_ARGS NAMES ftxui)
+    set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(FTXUI_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
+    set(FTXUI_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(ftxui)
+
+    # The FTXUI view as a library, so a headless render test can link it too.
+    add_library(fileshare_tui_view src/v2/tui/view.cpp)
+    target_link_libraries(fileshare_tui_view
+        PUBLIC  fileshare_tui_core ftxui::screen ftxui::dom
+        PRIVATE fileshare_warnings fileshare_sanitizers)
+
+    add_executable(fileshare_commander_app src/v2/commander_main.cpp)
+    target_link_libraries(fileshare_commander_app
+        PRIVATE fileshare_tui_view ftxui::component
+                fileshare_warnings fileshare_sanitizers)
+    set_target_properties(fileshare_commander_app PROPERTIES OUTPUT_NAME fileshare-commander)
+endif()
 
 # --- Server / client libraries ----------------------------------------------
 # The M1 server is portable (blocking / thread-per-connection). From M4 the
