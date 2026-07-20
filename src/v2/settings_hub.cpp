@@ -86,14 +86,21 @@ std::string SettingsHub::set(const std::string& key, const std::string& value,
     } else {
         std::uint64_t n = 0;
         if (!parse_u64(value, n)) return "value must be a non-negative integer";
+        // u64 keys.
         if (key == "limits.per_client_bps")            next.limits.per_client_bps = n;
         else if (key == "limits.global_bps")           next.limits.global_bps = n;
         else if (key == "limits.max_connections")      next.limits.max_connections = n;
-        else if (key == "limits.max_sessions_per_user")next.limits.max_sessions_per_user = static_cast<std::uint32_t>(n);
-        else if (key == "limits.handshake_timeout_s")  next.limits.handshake_timeout_s = static_cast<std::uint32_t>(n);
-        else if (key == "limits.idle_timeout_s")       next.limits.idle_timeout_s = static_cast<std::uint32_t>(n);
-        else if (key == "limits.auth_fail_ban_s")      next.limits.auth_fail_ban_s = static_cast<std::uint32_t>(n);
-        else if (key == "events.debounce_ms")          next.events_debounce_ms = static_cast<std::uint32_t>(n);
+        else {
+            // u32 keys: reject before narrowing, so a huge value can't silently
+            // wrap to a small (possibly valid) number and defeat the intent.
+            if (n > 0xFFFFFFFFull) return "value out of range (max 4294967295)";
+            const auto n32 = static_cast<std::uint32_t>(n);
+            if (key == "limits.max_sessions_per_user") next.limits.max_sessions_per_user = n32;
+            else if (key == "limits.handshake_timeout_s") next.limits.handshake_timeout_s = n32;
+            else if (key == "limits.idle_timeout_s")   next.limits.idle_timeout_s = n32;
+            else if (key == "limits.auth_fail_ban_s")  next.limits.auth_fail_ban_s = n32;
+            else if (key == "events.debounce_ms")      next.events_debounce_ms = n32;
+        }
     }
 
     if (const std::string err = next.validate(); !err.empty()) {

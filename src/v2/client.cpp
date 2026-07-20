@@ -51,7 +51,9 @@ Client::PollResult Client::poll_events(int timeout_ms) {
     if (!net::wait_readable(sock_, timeout_ms)) return PollResult::NONE;
     std::optional<Frame> fr = recv_frame(sock_);
     if (!fr) { connected_ = false; return PollResult::CLOSED; }
-    if (event_handler_) event_handler_(*fr);
+    // When idle we only expect server-pushed frames; deliver those to the event
+    // handler and ignore anything else rather than mislabelling it as an event.
+    if (is_async_frame(fr->type) && event_handler_) event_handler_(*fr);
     return PollResult::EVENT;
 }
 
@@ -141,6 +143,13 @@ void Client::disconnect() noexcept {
         sock_.close();
         connected_ = false;
     }
+}
+
+void Client::interrupt() noexcept {
+    // Only shuts down the socket (does not close/reuse the fd), so a peer thread
+    // blocked in recv/send wakes with an error. handle_ is set at connect and
+    // not mutated during the session, so this cross-thread read is safe.
+    if (connected_) net::shutdown_handle(sock_.handle());
 }
 
 // --- Filesystem -------------------------------------------------------------
@@ -268,7 +277,12 @@ Client::DownloadResult Client::download(const std::string& remote, const std::st
             res.checksum_ok = (digest.checksum == done_msg.checksum);
             if (!res.checksum_ok) {
                 res.error = "checksum mismatch";
-                return res;    // keep .part; caller may retry
+                // The .part is corrupt (its bytes don't match the server). Drop
+                // it so a retry re-downloads from scratch -- otherwise a full-size
+                // corrupt .part would resume at offset==total forever and keep
+                // re-failing verification on the same bad bytes.
+                fs::remove(part, ec);
+                return res;
             }
         } else {
             // Different algo build than the server: transfer is complete but

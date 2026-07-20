@@ -61,6 +61,11 @@ public:
     // session was marked dead. blocking=false (event bus) skips delivery rather
     // than waiting on a busy/slow session.
     bool send(const std::vector<std::uint8_t>& frame, bool blocking = true);
+    // Mark the session's socket dead under the send mutex. Called by the owning
+    // connection BEFORE it closes the fd, so any in-flight or queued send()
+    // (e.g. an event broadcast holding a shared_ptr to this session) either
+    // completes first or no-ops -- it can never write into a closed/reused fd.
+    void close_send();
     [[nodiscard]] bool alive() const noexcept { return !dead_.load(); }
     [[nodiscard]] std::uint64_t last_activity_unix() const noexcept { return last_activity_.load(); }
     void touch() noexcept;   // record activity (recv/heartbeat) for idle checks

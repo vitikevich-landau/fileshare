@@ -1,5 +1,6 @@
 #include "fileshare/v2/settings.hpp"
 
+#include <filesystem>
 #include <fstream>
 #include <stdexcept>
 
@@ -101,13 +102,25 @@ Settings Settings::load(const std::string& path) {
 }
 
 void Settings::save(const std::string& path) const {
-    std::ofstream out(path);
-    if (!out) {
-        throw std::runtime_error("cannot write config: " + path);
+    // Write to a temp file then rename, so a concurrent reader (e.g. a SIGHUP
+    // reload) never sees a half-written config.
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::trunc);
+        if (!out) {
+            throw std::runtime_error("cannot write config: " + tmp);
+        }
+        out << to_json(*this).dump(2) << "\n";
+        out.flush();
+        if (!out) {
+            throw std::runtime_error("write failed: " + tmp);
+        }
     }
-    out << to_json(*this).dump(2) << "\n";
-    if (!out) {
-        throw std::runtime_error("write failed: " + path);
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) {
+        std::filesystem::remove(tmp, ec);
+        throw std::runtime_error("could not replace config " + path);
     }
 }
 

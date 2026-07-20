@@ -49,6 +49,11 @@ public:
     void disconnect() noexcept;
     [[nodiscard]] bool connected() const noexcept { return connected_; }
 
+    // Half-close the socket to unblock a blocking recv/send in progress on
+    // another thread (used so the UI can stop the connection worker promptly even
+    // mid-download). Safe to call from a different thread than the one doing I/O.
+    void interrupt() noexcept;
+
     // --- Filesystem (throw RemoteError on a server ERROR) -------------------
     [[nodiscard]] std::vector<DirEntry> list_dir(const std::string& path);
     [[nodiscard]] DirEntry              stat(const std::string& path);

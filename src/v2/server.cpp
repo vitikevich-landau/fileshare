@@ -69,7 +69,13 @@ void handle_download(ServerContext& ctx, Session& session, const Frame& fr) {
     const std::uint32_t tid = ctx.next_transfer_id();
     // Mark the transfer in-flight BEFORE announcing it and keep it marked until
     // DOWNLOAD_DONE has been sent, so graceful drain never misreads an active
-    // transfer as idle (and never tears it down mid-stream).
+    // transfer as idle (and never tears it down mid-stream). The guard clears it
+    // on EVERY exit -- including an exception from checksum() below -- so a
+    // session can never be left permanently flagged as downloading.
+    struct InflightGuard {
+        Session& s;
+        ~InflightGuard() { s.set_current_path(""); }
+    } inflight_guard{session};
     session.set_current_path(norm);
     send(session, encode_download_accept(DownloadAccept{tid, total}));
 
@@ -107,20 +113,19 @@ void handle_download(ServerContext& ctx, Session& session, const Frame& fr) {
     }
 
     if (failed) {
-        session.set_current_path("");
         send_error(session, ErrCode::INTERNAL_ERROR, "read error during transfer");
-        return;
+        return;   // inflight_guard clears current_path
     }
 
     // Full-file checksum (cached) -- independent of the resume offset. Computed
     // while still marked in-flight so drain waits for it before tearing down.
+    // If checksum() throws, inflight_guard still clears current_path.
     const ChecksumResponse cr = ctx.vfs().checksum(norm);
     DownloadDone done;
     done.transfer_id = tid;
     done.algo = cr.algo;
     done.checksum = cr.checksum;
     send(session, encode_download_done(done));
-    session.set_current_path("");
     ctx.inc_completed();
 }
 
@@ -416,6 +421,10 @@ void handle_connection(net::Socket sock, ServerContext& ctx, std::string peer) {
         log_warn("session " + std::to_string(sid) + " error: " + e.what());
     }
 
+    // Mark the fd dead (under the send mutex) BEFORE closing it, so a concurrent
+    // event broadcast holding a shared_ptr to this session cannot write into the
+    // closed/reused fd. Then leave the registry and close.
+    session->close_send();
     ctx.sessions().remove(sid);
     sock.close();
 }

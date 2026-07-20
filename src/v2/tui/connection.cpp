@@ -47,7 +47,13 @@ void Connection::stop() {
         stop_ = true;
     }
     cv_.notify_all();
+    // Unblock the worker if it is parked in a blocking socket read (e.g. mid
+    // list/download), so quitting doesn't hang until the network op finishes.
+    client_.interrupt();
     if (worker_.joinable()) worker_.join();
+    // Detach the event handler so the Client (which outlives this Connection)
+    // no longer holds a lambda capturing our soon-to-be-dangling `this`.
+    client_.set_event_handler(nullptr);
 }
 
 void Connection::submit(Command cmd) {

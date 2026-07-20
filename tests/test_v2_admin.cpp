@@ -56,6 +56,19 @@ TEST(SettingsHub, RejectsBadValueAtomically) {
     EXPECT_EQ(hub.current()->limits.per_client_bps, 42u);
 }
 
+TEST(SettingsHub, U32KeyOutOfRangeRejected) {
+    Settings init;
+    init.limits.idle_timeout_s = 600;
+    SettingsHub hub(init);
+    // 2^32 would wrap to 0 (an invalid timeout) if narrowed before validate();
+    // it must be rejected outright, leaving the value unchanged.
+    EXPECT_FALSE(hub.set("limits.idle_timeout_s", "4294967296").empty());
+    EXPECT_EQ(hub.current()->limits.idle_timeout_s, 600u);
+    // A large-but-in-range value that would wrap to something "valid" is also
+    // rejected rather than silently stored as a different number.
+    EXPECT_FALSE(hub.set("limits.handshake_timeout_s", "4294967306").empty());  // wraps to 10
+}
+
 TEST(SettingsHub, MotdAndLogLevel) {
     SettingsHub hub(Settings{});
     EXPECT_EQ(hub.set("server.motd", "hello there"), "");

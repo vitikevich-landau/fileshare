@@ -68,7 +68,7 @@ void FsWatcher::stop() {
 void FsWatcher::run() {
     std::map<int, fs::path> wd_to_dir;   // watch descriptor -> directory path
 
-    auto add_watch_recursive = [&](const fs::path& dir) {
+    std::function<void(const fs::path&)> add_watch_recursive = [&](const fs::path& dir) {
         std::error_code ec;
         // Watch the directory itself...
         const int wd = ::inotify_add_watch(inotify_fd_, dir.c_str(), kMask);
@@ -111,6 +111,13 @@ void FsWatcher::run() {
         for (char* p = buf.data(); p < buf.data() + len;) {
             auto* ev = reinterpret_cast<inotify_event*>(p);
             p += sizeof(inotify_event) + ev->len;
+
+            // A watch was removed (dir deleted/moved/unmounted): drop its entry
+            // so wd_to_dir doesn't leak and a reused wd can't map to a stale dir.
+            if (ev->mask & IN_IGNORED) {
+                wd_to_dir.erase(ev->wd);
+                continue;
+            }
             if (ev->len == 0) continue;
 
             auto dir_it = wd_to_dir.find(ev->wd);
@@ -119,10 +126,11 @@ void FsWatcher::run() {
             const bool is_dir = (ev->mask & IN_ISDIR) != 0;
             const std::string vpath = vpath_of(full);
 
-            // Newly created directory: start watching it too.
+            // A directory appeared (created or moved in): watch it AND all of its
+            // pre-existing subdirectories, so moving a populated tree into the
+            // share is fully covered, not just its top level.
             if (is_dir && (ev->mask & (IN_CREATE | IN_MOVED_TO))) {
-                const int w = ::inotify_add_watch(inotify_fd_, full.c_str(), kMask);
-                if (w >= 0) wd_to_dir[w] = full;
+                add_watch_recursive(full);
             }
 
             FsOp op;

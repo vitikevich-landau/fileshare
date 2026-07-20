@@ -119,6 +119,41 @@ TEST_F(V2Events, EventsInSubdirDelivered) {
     EXPECT_TRUE(found);
 }
 
+// Moving a populated directory tree INTO the share must be fully watched, not
+// just its top level -- a file created inside a moved-in subdir emits an event.
+TEST_F(V2Events, MovedInSubtreeIsWatched) {
+    Client c;
+    ASSERT_TRUE(c.connect("127.0.0.1", port_, "vit", "").ok);
+    std::vector<EventFs> events;
+    c.set_event_handler([&](const Frame& f) {
+        if (f.type == Msg::EVENT_FS) events.push_back(parse_event_fs(f.payload.data(), f.payload.size()));
+    });
+    c.subscribe(SUB_FS);
+    (void)c.list_dir("/");
+
+    // Build a populated tree OUTSIDE the share, then move it in.
+    const fs::path staging = base_ / "staging" / "tree" / "deep";
+    fs::create_directories(staging);
+    std::ofstream(staging / "pre.bin", std::ios::binary) << "x";   // pre-existing
+    fs::rename(base_ / "staging" / "tree", share_ / "tree");        // IN_MOVED_TO of a populated dir
+
+    // Wait for the watcher to process IN_MOVED_TO and add the recursive watches
+    // (its select loop polls on a 200ms tick), then create a NEW file inside the
+    // moved-in deep subdir; its watch must now exist.
+    std::this_thread::sleep_for(700ms);
+    std::ofstream(share_ / "tree" / "deep" / "after.bin", std::ios::binary) << "y";
+
+    // Poll until the specific deep-file event arrives (not just the first event,
+    // which is the /tree move itself).
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    bool found = false;
+    while (!found && std::chrono::steady_clock::now() < deadline) {
+        c.poll_events(50);
+        for (const auto& e : events) if (e.path == "/tree/deep/after.bin") found = true;
+    }
+    EXPECT_TRUE(found);
+}
+
 // The critical interleaving case: events buffered before a download response
 // must be handled out-of-band and must not corrupt the transfer.
 TEST_F(V2Events, EventDuringDownloadDoesNotCorrupt) {

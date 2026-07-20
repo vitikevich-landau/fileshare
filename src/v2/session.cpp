@@ -40,13 +40,15 @@ std::string Session::current_path() const {
 }
 
 bool Session::send(const std::vector<std::uint8_t>& frame, bool blocking) {
-    if (dead_.load()) return false;
     std::unique_lock<std::mutex> lk(send_mutex_, std::defer_lock);
     if (blocking) {
         lk.lock();
     } else if (!lk.try_lock()) {
         return false;   // busy (mid-transfer / responding) -- event bus skips
     }
+    // Re-check dead_ UNDER the lock: a sender that was waiting for the mutex must
+    // not write after close_send() marked the fd dead (and the owner closed it).
+    if (dead_.load()) return false;
     try {
         net::send_all(handle_, frame.data(), frame.size());
         return true;
@@ -54,6 +56,11 @@ bool Session::send(const std::vector<std::uint8_t>& frame, bool blocking) {
         dead_.store(true);
         return false;
     }
+}
+
+void Session::close_send() {
+    std::lock_guard<std::mutex> lk(send_mutex_);
+    dead_.store(true);
 }
 
 void Session::touch() noexcept {
