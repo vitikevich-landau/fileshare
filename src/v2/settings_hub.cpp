@@ -57,6 +57,11 @@ std::string SettingsHub::apply(const Settings& next) {
     if (const std::string err = next.validate(); !err.empty()) {
         return err;
     }
+    // Serialize against set()'s read-modify-write: a SIGHUP whole-file reload and
+    // a concurrent ADMIN_SET must not clobber each other. set() holds this same
+    // mutex across its store + change callback, so once we hold it here no
+    // half-applied set() can interleave with this reload.
+    std::lock_guard<std::mutex> lk(write_mu_);
     snapshot_.store(std::make_shared<const Settings>(next));
     return {};
 }

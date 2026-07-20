@@ -68,23 +68,50 @@ TEST(SettingsHub, MotdAndLogLevel) {
 // --- RateLimiter unit -------------------------------------------------------
 TEST(RateLimiter, UnlimitedGrantsImmediately) {
     RateLimiter rl;
-    TokenBucket b;
-    EXPECT_EQ(rl.throttle(b, 0, 0, 65536), 65536u);
+    EXPECT_EQ(rl.throttle("vit", 0, 0, 65536), 65536u);
 }
 
 TEST(RateLimiter, LimitTakesProportionalTime) {
     RateLimiter rl;
-    TokenBucket b;
     const std::uint64_t rate = 1000000;   // 1 MB/s, 1 MB burst
     std::size_t total = 0;
     const auto start = std::chrono::steady_clock::now();
     while (total < 3u * 1000 * 1000) {     // grant ~3 MB
-        total += rl.throttle(b, rate, 0, 65536);
+        total += rl.throttle("vit", rate, 0, 65536);
     }
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     // 3 MB at 1 MB/s after a 1 MB burst ~= 2 s.
     EXPECT_GT(secs, 1.0);
     EXPECT_LT(secs, 6.0);
+}
+
+TEST(RateLimiter, PerClientSharedAcrossTransfers) {
+    // Two concurrent "transfers" for the SAME client must together stay near the
+    // per-client rate (they share one bucket), not double it.
+    RateLimiter rl;
+    const std::uint64_t rate = 1000000;   // 1 MB/s
+    std::atomic<std::uint64_t> total{0};
+    const auto start = std::chrono::steady_clock::now();
+    auto worker = [&] {
+        std::uint64_t got = 0;
+        while (got < 1500000) { got += rl.throttle("same-user", rate, 0, 65536); }
+        total.fetch_add(got);
+    };
+    std::thread a(worker), b(worker);   // 2 threads, ~3 MB total for one client
+    a.join(); b.join();
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    // ~3 MB shared at 1 MB/s (1 MB burst) ~= 2 s. If the bucket were per-transfer
+    // it would finish in ~0.5 s (each thread its own 1 MB burst + rate).
+    EXPECT_GT(secs, 1.3);
+}
+
+TEST(RateLimiter, DistinctClientsIndependent) {
+    // Different clients get independent buckets: two clients each pulling at the
+    // limit finish about as fast as one would (their buckets don't interfere).
+    RateLimiter rl;
+    const std::uint64_t rate = 2000000;   // 2 MB/s each
+    EXPECT_EQ(rl.throttle("alice", rate, 0, 65536), 65536u);   // fresh burst
+    EXPECT_EQ(rl.throttle("bob", rate, 0, 65536), 65536u);     // independent fresh burst
 }
 
 // --- Admin integration ------------------------------------------------------

@@ -76,7 +76,9 @@ void handle_download(ServerContext& ctx, Session& session, const Frame& fr) {
     std::vector<char> buf(CHUNK_SIZE);
     std::uint64_t remaining = total - req.offset;
     bool failed = false;
-    TokenBucket bucket;   // this transfer's per-client rate bucket
+    // Rate limiting is keyed per client (login, or IP if anonymous) so a
+    // client's concurrent transfers share one per-client budget.
+    const std::string rate_key = session.login().empty() ? session.ip() : session.login();
     while (remaining > 0) {
         // Read the bandwidth limits fresh EACH chunk: an admin lowering
         // per_client_bps / global_bps slows this in-flight transfer immediately.
@@ -84,7 +86,7 @@ void handle_download(ServerContext& ctx, Session& session, const Frame& fr) {
         const std::size_t want = static_cast<std::size_t>(
             std::min<std::uint64_t>(CHUNK_SIZE, remaining));
         const std::size_t grant = ctx.rate_limiter().throttle(
-            bucket, cfg->limits.per_client_bps, cfg->limits.global_bps, want);
+            rate_key, cfg->limits.per_client_bps, cfg->limits.global_bps, want);
 
         in.read(buf.data(), static_cast<std::streamsize>(grant));
         const std::streamsize got = in.gcount();
